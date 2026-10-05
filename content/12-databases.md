@@ -297,3 +297,84 @@ CALL archive_old_orders(10000);
 - скрытые триггеры удивляют разработчиков («почему изменилась другая таблица?») и замедляют массовые операции.
 
 **С точки зрения DevOps:** процедуры и функции — часть схемы. Они должны проходить через **миграции** (Flyway/Liquibase, `CREATE OR REPLACE`), ревью и CI, а не создаваться вручную в проде. Их тоже нужно мониторить (`pg_stat_user_functions` при `track_functions = all`).
+
+## Q: Какие виды JOIN бывают? Что такое индекс и когда он не помогает?
+level: middle
+type: theory
+freq: 3
+tags: sql, индексы
+
+**JOIN** — объединение строк таблиц по условию:
+- **INNER JOIN** — только строки, у которых есть совпадение в обеих таблицах;
+- **LEFT (OUTER) JOIN** — все строки левой таблицы + совпадения из правой (иначе NULL). Пример: все пользователи и их заказы, включая пользователей без заказов;
+- **RIGHT JOIN** — зеркально;
+- **FULL OUTER JOIN** — все строки обеих таблиц;
+- **CROSS JOIN** — декартово произведение (каждая с каждой).
+
+```sql
+SELECT u.email, count(o.id) AS orders
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+WHERE u.created_at > now() - interval '30 days'
+GROUP BY u.email
+HAVING count(o.id) = 0;          -- новые пользователи без заказов
+```
+`WHERE` фильтрует строки до группировки, `HAVING` — после.
+
+**Индекс** — дополнительная структура данных (чаще всего **B-tree**), позволяющая находить строки без полного перебора таблицы (Seq Scan), примерно как алфавитный указатель в книге.
+```sql
+CREATE INDEX CONCURRENTLY idx_orders_user_id ON orders (user_id);   -- без блокировки записи
+CREATE INDEX idx_orders_user_created ON orders (user_id, created_at); -- составной
+CREATE UNIQUE INDEX ON users (lower(email));                          -- по выражению
+```
+Другие типы в PostgreSQL: Hash, **GIN** (полнотекстовый поиск, JSONB, массивы), GiST (геоданные), BRIN (огромные таблицы с естественным порядком, например по времени).
+
+**Цена индексов:** замедляют INSERT/UPDATE/DELETE (каждый индекс тоже надо обновить), занимают место. Неиспользуемые индексы стоит удалять (`pg_stat_user_indexes`, `idx_scan = 0`).
+
+**Когда индекс не используется:**
+- низкая селективность: условие выбирает большую часть таблицы (например, `status = 'active'` для 90% строк) — полный перебор дешевле;
+- функция над колонкой: `WHERE lower(email) = ...` при индексе на `email` (нужен индекс по выражению);
+- `LIKE '%abc'` (шаблон начинается с `%`) — B-tree не поможет, нужен trigram-индекс (pg_trgm);
+- составной индекс `(a, b)` и условие только по `b` (порядок колонок важен);
+- несовпадение типов, неявное приведение;
+- маленькая таблица;
+- устаревшая статистика → планировщик ошибается (`ANALYZE`).
+
+Проверять: `EXPLAIN ANALYZE SELECT ...` — Index Scan / Index Only Scan / Seq Scan и реальное время.
+
+## Q: Как создать пользователя PostgreSQL и выдать права? Что такое pg_hba.conf?
+level: middle
+type: practice
+freq: 2
+tags: postgresql, права
+
+**Пользователи и права.** В PostgreSQL пользователи и группы — это **роли** (роль с `LOGIN` — пользователь).
+```sql
+CREATE ROLE app_rw LOGIN PASSWORD 'secret';
+CREATE ROLE readonly NOLOGIN;                           -- групповая роль
+
+CREATE DATABASE shop OWNER app_rw;
+\c shop
+GRANT CONNECT ON DATABASE shop TO readonly;
+GRANT USAGE ON SCHEMA public TO readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;               -- существующие таблицы
+ALTER DEFAULT PRIVILEGES FOR ROLE app_rw IN SCHEMA public
+  GRANT SELECT ON TABLES TO readonly;                                   -- будущие таблицы
+CREATE ROLE analyst LOGIN PASSWORD '...' IN ROLE readonly;              -- член группы
+```
+Частая ошибка: выдали `SELECT ON ALL TABLES`, а новые таблицы недоступны — нужны `ALTER DEFAULT PRIVILEGES`. Ещё одна: нет `USAGE` на схему. Посмотреть права: `\du`, `\dp table`.
+
+Принципы: приложение работает **не под суперпользователем**; отдельные роли для приложения, миграций (владелец объектов), чтения и аналитики; пароли — в секрет-хранилище, лучше с ротацией (Vault database secrets engine выдаёт временные учётки).
+
+**pg_hba.conf** (host-based authentication) — **кто, откуда и как** может подключиться. Правила проверяются **сверху вниз**, срабатывает первое совпавшее:
+```
+# TYPE   DATABASE  USER      ADDRESS         METHOD
+local    all       postgres                  peer            # локально через Unix-сокет, по имени ОС-пользователя
+host     shop      app_rw    10.0.1.0/24     scram-sha-256   # пароль, из подсети приложений
+hostssl  shop      analyst   10.0.5.0/24     scram-sha-256   # только по TLS
+host     replication replicator 10.0.2.0/24  scram-sha-256   # репликация
+host     all       all       0.0.0.0/0       reject
+```
+Методы: `scram-sha-256` (рекомендуется), `md5` (устаревший), `peer` (по имени пользователя ОС, только локально), `cert` (клиентский сертификат), `trust` (**без пароля — только для отладки, никогда в проде**), `reject`.
+
+После изменения: `SELECT pg_reload_conf();` или `systemctl reload postgresql`. Ещё нужен `listen_addresses` в `postgresql.conf` (по умолчанию PostgreSQL слушает только localhost). Ошибка `no pg_hba.conf entry for host ...` означает, что ни одно правило не подошло.

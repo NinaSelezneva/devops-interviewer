@@ -435,3 +435,197 @@ PersistentKeepalive = 25
 - **Сегментация**: VPN не должен давать доступ ко всей сети. Нужны правила по ролям.
 
 **Современная альтернатива** классическому remote-access VPN — Zero Trust и mesh-VPN: Tailscale/Headscale, Netbird (на основе WireGuard, с SSO и ACL), identity-aware proxy (Teleport, Cloudflare Access) для доступа к конкретным сервисам вместо сети целиком.
+
+## Q: Расскажите про модель OSI. На каком уровне работают коммутатор, маршрутизатор, балансировщик?
+level: middle
+type: theory
+freq: 3
+tags: osi, основы
+
+**OSI** — эталонная 7-уровневая модель сетевого взаимодействия. На практике используется более простой стек **TCP/IP** (4 уровня), но уровни OSI — общий язык («проблема на L3», «балансировщик L7»).
+
+| № | Уровень | Единица данных | Что делает | Протоколы и устройства |
+|---|---|---|---|---|
+| 7 | Прикладной | данные | взаимодействие приложений | HTTP, DNS, SMTP, SSH, DHCP |
+| 6 | Представления | данные | кодирование, шифрование, сжатие | TLS (условно), JPEG, кодировки |
+| 5 | Сеансовый | данные | установка и поддержание сеанса | RPC, (условно) TLS-сессии |
+| 4 | Транспортный | сегмент / датаграмма | доставка между приложениями, порты, надёжность | TCP, UDP |
+| 3 | Сетевой | пакет | адресация и маршрутизация между сетями | IP, ICMP, маршрутизатор |
+| 2 | Канальный | кадр | доставка в пределах сегмента, MAC-адреса | Ethernet, ARP, VLAN, коммутатор |
+| 1 | Физический | биты | сигнал в среде передачи | кабель, оптика, радио, хаб |
+
+Мнемоника (англ., снизу вверх): *Please Do Not Throw Sausage Pizza Away*.
+
+**Устройства:**
+- **хаб** — L1, повторяет сигнал на все порты;
+- **коммутатор (switch)** — L2, пересылает кадры по MAC-таблице; L3-коммутатор умеет и маршрутизировать;
+- **маршрутизатор (router)** — L3, пересылает пакеты между сетями по таблице маршрутов;
+- **файрвол** — L3/L4 (IP, порты, состояние соединения), NGFW и WAF — до L7;
+- **балансировщик** — L4 (NLB, IPVS) или L7 (ALB, nginx).
+
+**Инкапсуляция:** при отправке каждый уровень добавляет свой заголовок (HTTP → TCP-сегмент → IP-пакет → Ethernet-кадр), при приёме заголовки снимаются в обратном порядке.
+
+**Практическое применение — диагностика снизу вверх:** есть ли линк (L1/L2: `ip link`, ARP), есть ли маршрут и связность (L3: `ping`, `ip route`), открыт ли порт (L4: `nc -zv`), отвечает ли приложение (L7: `curl -v`).
+
+## Q: Какие HTTP-методы и коды ответов вы знаете? Какие заголовки важны?
+level: middle
+type: theory
+freq: 3
+tags: http
+
+**Методы:**
+| Метод | Назначение | Безопасный | Идемпотентный |
+|---|---|---|---|
+| GET | получить ресурс | да | да |
+| HEAD | только заголовки | да | да |
+| POST | создать или выполнить действие | нет | **нет** |
+| PUT | заменить ресурс целиком | нет | да |
+| PATCH | частично изменить | нет | не гарантируется |
+| DELETE | удалить | нет | да |
+| OPTIONS | возможности сервера, CORS preflight | да | да |
+
+Идемпотентность важна для **ретраев**: повторять GET/PUT/DELETE безопасно, POST — нет (двойной платёж).
+
+**Коды ответов:**
+- **1xx** — информационные (101 Switching Protocols — переход на WebSocket);
+- **2xx** — успех: 200 OK, 201 Created, 204 No Content;
+- **3xx** — перенаправление: 301 (постоянное), 302/307 (временное), 304 Not Modified (кеш), 308;
+- **4xx** — ошибка клиента: 400 Bad Request, **401** Unauthorized (не аутентифицирован), **403** Forbidden (нет прав), 404 Not Found, 405 Method Not Allowed, 408 Request Timeout, 409 Conflict, 413 Payload Too Large (`client_max_body_size` в nginx), 429 Too Many Requests (rate limit);
+- **5xx** — ошибка сервера: 500 Internal Server Error, **502** Bad Gateway, **503** Service Unavailable, **504** Gateway Timeout.
+
+**Важные заголовки:**
+- запрос: `Host` (виртуальные хосты), `User-Agent`, `Authorization`, `Cookie`, `Accept`, `Content-Type`, `X-Forwarded-For` / `X-Forwarded-Proto` (исходный IP и схема за прокси), `X-Request-ID`;
+- ответ: `Content-Type`, `Content-Length`, `Set-Cookie`, `Location` (для редиректов), `Cache-Control`, `ETag`, `Strict-Transport-Security` (HSTS), `Retry-After`;
+- CORS: `Access-Control-Allow-Origin` и др. — браузер не даст JS-коду с одного домена читать ответы другого домена без разрешения сервера.
+
+Проверить вручную: `curl -I https://example.com` (только заголовки), `curl -v`, вкладка Network в DevTools браузера.
+
+## Q: Как настроить nginx как reverse proxy? Как nginx выбирает location?
+level: middle
+type: practice
+freq: 3
+tags: nginx, reverse-proxy
+
+```nginx
+upstream api_backend {
+    server 10.0.1.10:8080 max_fails=3 fail_timeout=10s;
+    server 10.0.1.11:8080;
+    keepalive 32;                       # пул соединений к апстримам
+}
+
+server {
+    listen 80;
+    server_name shop.example.com;
+    return 301 https://$host$request_uri;          # редирект на HTTPS
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name shop.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/shop.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/shop.example.com/privkey.pem;
+
+    client_max_body_size 20m;
+
+    location /static/ {
+        root /var/www/shop;                         # файл: /var/www/shop/static/...
+        expires 7d;
+    }
+
+    location /api/ {
+        proxy_pass http://api_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;           # SPA
+    }
+}
+```
+
+**Порядок выбора location:**
+1. `location = /path` — **точное совпадение**, применяется сразу.
+2. Среди **префиксных** location выбирается **самый длинный** совпадающий. Если у него модификатор `^~`, регулярные выражения не проверяются.
+3. **Регулярные выражения** `~` (с учётом регистра) и `~*` (без) проверяются **по порядку в конфиге**, побеждает первое совпавшее.
+4. Если ни одно регулярное выражение не подошло, используется самый длинный префикс из шага 2.
+
+**Частые ловушки:**
+- `proxy_pass http://backend/;` **со слешем на конце** заменяет совпавшую часть пути: `/api/users` → `/users`. Без слеша путь передаётся как есть.
+- `root` vs `alias`: `root` дописывает весь URI к пути, `alias` заменяет часть URI из location.
+- Не передан `Host`/`X-Forwarded-*` → приложение генерирует неверные ссылки или видит IP прокси вместо клиента.
+
+**Эксплуатация:** проверка конфигурации `nginx -t`, применение без разрыва соединений `nginx -s reload` (или `systemctl reload nginx`), логи `/var/log/nginx/access.log` и `error.log`, переоткрытие логов после ротации — сигнал `USR1`.
+
+## Q: Как работает аутентификация по SSH-ключу? Как настроить ~/.ssh/config и jump host?
+level: middle
+type: practice
+freq: 3
+tags: ssh
+
+**Аутентификация по ключу:**
+1. Генерируем пару: `ssh-keygen -t ed25519 -C "alice@laptop"` → `~/.ssh/id_ed25519` (закрытый, никому не передавать) и `id_ed25519.pub` (открытый).
+2. Открытый ключ кладём на сервер в `~/.ssh/authorized_keys` (`ssh-copy-id user@host`).
+3. При подключении сервер проверяет, что клиент владеет закрытым ключом: клиент **подписывает** данные сессии своим закрытым ключом, сервер проверяет подпись открытым. Сам закрытый ключ по сети не передаётся.
+4. Перед этим клиент проверяет **ключ хоста** сервера по `~/.ssh/known_hosts` (защита от MITM). Предупреждение `REMOTE HOST IDENTIFICATION HAS CHANGED` означает, что сервер переустановили или кто-то подменяет соединение.
+
+**Права**, без которых sshd отвергнет ключ: `~/.ssh` — 700, `authorized_keys` — 600, закрытый ключ — 600 (иначе клиент ругается `Permissions 0644 are too open`), домашний каталог не должен быть доступен на запись другим.
+
+**~/.ssh/config:**
+```
+Host bastion
+    HostName 203.0.113.10
+    User alice
+    IdentityFile ~/.ssh/id_ed25519
+
+Host prod-*
+    User deploy
+    ProxyJump bastion          # подключение через jump host
+    ServerAliveInterval 30
+
+Host prod-db
+    HostName 10.0.3.15
+```
+Теперь `ssh prod-db` автоматически пойдёт через bastion. Разово то же самое: `ssh -J alice@bastion deploy@10.0.3.15`.
+
+**ssh-agent** хранит расшифрованные ключи в памяти (`ssh-add`). `ForwardAgent yes` пробрасывает агент на удалённый хост — удобно, но **небезопасно** на чужих серверах (root там может использовать ваш агент). Вместо этого лучше `ProxyJump`.
+
+**Защита sshd** (`/etc/ssh/sshd_config`): `PasswordAuthentication no`, `PermitRootLogin no`, `AllowUsers`/`AllowGroups`, fail2ban, доступ только через bastion или VPN. Крупные компании переходят на **SSH-сертификаты** (короткоживущие, выдаются CA: Vault, Teleport) вместо раскладывания ключей.
+
+## Q: Что такое SSH-туннели? Чем отличаются -L, -R и -D?
+level: middle
+type: practice
+freq: 2
+tags: ssh, туннели
+
+SSH умеет пробрасывать TCP-соединения через зашифрованный канал.
+
+**Локальный проброс `-L`** — открыть порт **у себя**, который ведёт к адресу, доступному **с сервера**:
+```bash
+ssh -L 5433:db.internal:5432 bastion
+# теперь psql -h localhost -p 5433 подключается к db.internal:5432 через bastion
+```
+Типичный случай: доступ к БД, админке или Kubernetes API во внутренней сети.
+
+**Удалённый проброс `-R`** — открыть порт **на сервере**, который ведёт к адресу, доступному **у вас**:
+```bash
+ssh -R 8080:localhost:3000 public-server
+# public-server:8080 → ваш localhost:3000 (показать локальный сервис снаружи)
+```
+Чтобы порт слушал не только на loopback сервера, нужна опция `GatewayPorts` в sshd.
+
+**Динамический проброс `-D`** — локальный **SOCKS-прокси**, весь трафик которого выходит с сервера:
+```bash
+ssh -D 1080 bastion      # в браузере указать SOCKS5 localhost:1080
+```
+
+Полезные флаги: `-N` (не запускать команду, только туннель), `-f` (в фон), `-o ExitOnForwardFailure=yes`. Для постоянных туннелей — `autossh` или systemd-сервис.
+
+**С точки зрения безопасности:** туннели позволяют обойти сетевую сегментацию, поэтому на bastion их часто ограничивают (`AllowTcpForwarding no` или `PermitOpen`). Для регулярного доступа лучше VPN или identity-aware proxy. Аналог в Kubernetes — `kubectl port-forward`.

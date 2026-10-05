@@ -420,3 +420,178 @@ lsof +L1 | grep app                # PID и номер fd
 - Понизить уровень логирования (debug в проде — частая причина).
 - **Отдельный раздел** под `/var/log`, чтобы логи не заполнили корневую ФС.
 - **Алерт** на заполнение диска, причём по прогнозу (`predict_linear(node_filesystem_avail_bytes[6h], 4*3600) < 0`), а не только по порогу.
+
+## Q: Как управлять пользователями, группами и sudo в Linux?
+level: middle
+type: practice
+freq: 2
+tags: пользователи, sudo, права
+
+**Где хранится информация:**
+- `/etc/passwd` — пользователи: `имя:x:UID:GID:комментарий:домашний_каталог:shell`;
+- `/etc/shadow` — хеши паролей и сроки действия (доступен только root);
+- `/etc/group` — группы и их участники.
+
+UID 0 — root. Системные пользователи для сервисов (UID < 1000) создаются без shell для входа (`/usr/sbin/nologin`).
+
+**Основные команды:**
+```bash
+useradd -m -s /bin/bash -G docker,wheel alice   # создать с домашним каталогом и доп. группами
+passwd alice
+usermod -aG docker alice     # ДОБАВИТЬ в группу (без -a все остальные доп. группы будут удалены!)
+id alice; groups alice
+userdel -r alice             # удалить вместе с домашним каталогом
+useradd -r -s /usr/sbin/nologin app   # системный пользователь для сервиса
+chown -R app:app /opt/app
+```
+Новые группы применяются только к **новым** сессиям: перелогиниться или выполнить `newgrp docker`.
+
+**sudo** — выполнение команд от имени другого пользователя (обычно root) с аудитом. Правила в `/etc/sudoers` и `/etc/sudoers.d/*`, редактировать **только через `visudo`** (проверяет синтаксис, ошибка может лишить вас sudo):
+```
+%wheel   ALL=(ALL:ALL) ALL                           # группа wheel (sudo в Debian/Ubuntu) — всё
+deploy   ALL=(root) NOPASSWD: /bin/systemctl restart api   # только конкретная команда без пароля
+```
+Хорошие практики: вход root по SSH запрещён (`PermitRootLogin no`), персональные учётки + sudo, минимальные права (конкретные команды вместо ALL), логи sudo (`journalctl _COMM=sudo`, `/var/log/auth.log` или `/var/log/secure`). Осторожно с разрешёнными командами, через которые можно получить shell: `vim`, `less`, `find -exec`, `tar` — сайт GTFOBins.
+
+`su -` — переключиться на другого пользователя (нужен его пароль), `sudo -i` — интерактивный root-shell через sudo (нужен свой пароль).
+
+## Q: Как работает cron? Объясните формат расписания.
+level: middle
+type: practice
+freq: 3
+tags: cron, планировщик
+
+**cron** — демон, запускающий команды по расписанию. Где задаются задания:
+- `crontab -e` / `crontab -l` — задания пользователя (хранятся в `/var/spool/cron/`);
+- `/etc/crontab` и `/etc/cron.d/*` — системные, с дополнительным полем **пользователя**;
+- `/etc/cron.daily`, `cron.hourly`, `cron.weekly` — каталоги со скриптами (запуск через run-parts или anacron).
+
+**Формат:** `минута час день_месяца месяц день_недели команда`
+```
+# ┌ минута (0-59)
+# │ ┌ час (0-23)
+# │ │ ┌ день месяца (1-31)
+# │ │ │ ┌ месяц (1-12)
+# │ │ │ │ ┌ день недели (0-7, 0 и 7 — воскресенье)
+  */5 * * * *   /opt/scripts/check.sh            # каждые 5 минут
+  0 3 * * *     /opt/backup.sh                   # каждый день в 03:00
+  30 2 * * 1-5  /opt/report.sh                   # в 02:30 по будням
+  0 0 1 * *     /opt/monthly.sh                  # 1-го числа каждого месяца
+  0 */6 * * *   /opt/sync.sh                     # каждые 6 часов
+  @reboot       /opt/on-boot.sh
+```
+Проверять выражения удобно на crontab.guru.
+
+**Типичные проблемы («вручную работает, а в cron — нет»):**
+- **минимальное окружение**: другой `PATH` (`/usr/bin:/bin`), нет переменных из `.bashrc` → указывать полные пути или задавать `PATH=` в crontab;
+- shell по умолчанию — `/bin/sh`, а не bash;
+- символ `%` в crontab означает перевод строки, его нужно экранировать (`date +\%F`);
+- вывод уходит в почту или теряется → перенаправлять: `>> /var/log/job.log 2>&1`;
+- **параллельные запуски**, если задача длится дольше интервала → `flock -n /tmp/job.lock cmd`;
+- часовой пояс сервера.
+
+Логи: `grep CRON /var/log/syslog` или `journalctl -u cron`.
+
+**Альтернативы:** **systemd timers** (логи в journald, зависимости, `Persistent=true` — догнать пропущенный запуск, случайная задержка `RandomizedDelaySec`), Kubernetes **CronJob**, планировщики в CI.
+
+## Q: Типовые задачи с find, grep и sed: найдите большие файлы, замените строку в конфигах, найдите ошибки в логах.
+level: middle
+type: practice
+freq: 3
+tags: find, grep, sed
+
+```bash
+# --- find ---
+find /var -xdev -type f -size +500M -exec ls -lh {} \;       # файлы больше 500 МБ на этом разделе
+du -xh / 2>/dev/null | sort -rh | head -20                    # самые большие каталоги
+find /var/log/app -name '*.log' -mtime +7 -delete            # логи старше 7 дней
+find /etc -type f -mmin -60                                   # изменённые за последний час
+find . -type f -name '*.sh' ! -perm -u+x                      # скрипты без права на выполнение
+find /data -type f -print0 | xargs -0 -P4 gzip                # безопасно с пробелами, параллельно
+
+# --- grep ---
+grep -rn 'ERROR' /var/log/app/                 # рекурсивно, с номерами строк
+grep -ri --include='*.yaml' 'image:' .         # без учёта регистра, только yaml
+grep -c 'timeout' app.log                      # количество строк
+grep -v '^#' nginx.conf | grep -v '^$'         # конфиг без комментариев и пустых строк
+grep -E 'ERROR|FATAL' app.log | tail -50       # расширенные регулярные выражения
+grep -A5 -B2 'Exception' app.log               # контекст: 5 строк после и 2 до
+zgrep 'ERROR' app.log.*.gz                     # в сжатых логах
+grep -l 'old.example.com' -r /etc              # только имена файлов
+
+# --- sed ---
+sed -i 's/old.example.com/new.example.com/g' /etc/app/*.conf   # замена во всех файлах
+sed -i.bak 's/^#\?MaxSessions.*/MaxSessions 10/' /etc/ssh/sshd_config  # с бэкапом .bak
+sed -n '100,200p' big.log                       # вывести строки 100–200
+sed '/^\s*#/d; /^\s*$/d' config                 # удалить комментарии и пустые строки
+sed -n '/2026-10-05 14:00/,/2026-10-05 14:10/p' app.log   # интервал времени в логе
+```
+Чего ждут на собеседовании: уверенное владение комбинацией утилит через пайпы, понимание `-exec` и `xargs`, привычка делать бэкап перед `sed -i`. Для массовых изменений конфигураций на многих серверах правильнее Ansible. Современные альтернативы: `ripgrep` (rg), `fd`.
+
+## Q: Как добавить диск или расширить раздел на сервере? Что такое LVM и fstab?
+level: middle
+type: practice
+freq: 2
+tags: диски, lvm, fstab
+
+**Посмотреть диски и разделы:** `lsblk`, `df -h`, `blkid`, `fdisk -l`.
+
+**Новый диск без LVM:**
+```bash
+parted /dev/sdb --script mklabel gpt mkpart primary ext4 0% 100%
+mkfs.ext4 /dev/sdb1                    # или mkfs.xfs
+mkdir /data && mount /dev/sdb1 /data
+blkid /dev/sdb1                        # узнать UUID
+echo 'UUID=xxxx /data ext4 defaults,nofail 0 2' >> /etc/fstab
+mount -a                               # проверить fstab ДО перезагрузки
+```
+**/etc/fstab** — что монтировать при загрузке: `устройство точка ФС опции dump pass`. Указывать **UUID**, а не `/dev/sdb1` (имена устройств могут поменяться). Опция `nofail` — не останавливать загрузку, если диска нет. Ошибка в fstab может отправить сервер в emergency mode при перезагрузке, поэтому обязательно `mount -a` или `findmnt --verify`.
+
+**LVM** (Logical Volume Manager) — слой абстракции над дисками:
+- **PV** (physical volume) — диск или раздел, отданный LVM;
+- **VG** (volume group) — пул из одного или нескольких PV;
+- **LV** (logical volume) — «раздел» из пула, на нём создаётся ФС.
+
+Плюсы: расширение томов на лету, объединение нескольких дисков, снапшоты, перенос данных между дисками (`pvmove`).
+
+```bash
+pvcreate /dev/sdc
+vgextend vg_data /dev/sdc                  # добавить диск в пул
+lvextend -r -L +50G /dev/vg_data/lv_app    # -r сразу расширяет файловую систему
+# или по отдельности: resize2fs (ext4) / xfs_growfs /mount/point (xfs)
+```
+
+**Расширение диска в облаке** (увеличили volume в консоли): `growpart /dev/nvme0n1 1` (расширить раздел) → `resize2fs /dev/nvme0n1p1` или `xfs_growfs /`. Перезагрузка не нужна.
+
+**Важно:** XFS можно только **увеличить**, уменьшить нельзя. Ext4 уменьшается только в размонтированном виде. Перед операциями с разделами делать снапшот или бэкап.
+
+## Q: Где искать логи в Linux? Как пользоваться journalctl?
+level: middle
+type: practice
+freq: 2
+tags: логи, journald
+
+**Классические текстовые логи** в `/var/log/`:
+- `syslog` (Debian/Ubuntu) или `messages` (RHEL) — общий системный журнал;
+- `auth.log` / `secure` — входы, sudo, SSH;
+- `kern.log`, вывод `dmesg` — сообщения ядра (OOM killer, ошибки дисков, сети);
+- логи приложений: `/var/log/nginx/`, `/var/log/postgresql/` и т.д.
+
+Их пишет **rsyslog**, ротирует **logrotate**.
+
+**journald** (systemd) — бинарный структурированный журнал всех сервисов, ядра и stdout/stderr юнитов:
+```bash
+journalctl -u nginx                       # логи конкретного сервиса
+journalctl -u nginx -f                    # в реальном времени (как tail -f)
+journalctl -u api --since "1 hour ago"    # или --since "2026-10-05 14:00" --until ...
+journalctl -p err -b                      # только ошибки с момента текущей загрузки
+journalctl -b -1                          # логи предыдущей загрузки (почему сервер перезагрузился)
+journalctl -k                             # сообщения ядра
+journalctl _PID=1234
+journalctl -u api -o json-pretty          # структурированный вывод
+journalctl --disk-usage
+journalctl --vacuum-time=7d               # очистить старое
+```
+Чтобы журнал сохранялся между перезагрузками, нужен каталог `/var/log/journal` (`Storage=persistent` в `journald.conf`). Размер ограничивается `SystemMaxUse=`.
+
+В контейнерах логи читают через `docker logs` / `kubectl logs`, в продакшене — из централизованной системы (ELK, Loki).

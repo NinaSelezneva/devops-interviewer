@@ -142,3 +142,101 @@ tags: подходы
 **Immutable**: сервер/контейнер не меняется после создания. Для изменения собирается **новый образ** (Docker, AMI через Packer) и заменяются экземпляры. Плюсы — воспроизводимость, одинаковость окружений, простой откат (предыдущий образ), безопасность. Минусы — время сборки и деплоя, нужна автоматизация, stateful-данные выносятся отдельно.
 
 На практике — гибрид: базовые образы собираются Packer + Ansible, запуск через ASG/Kubernetes, минимальная конфигурация при старте через cloud-init/переменные окружения. Ansible остаётся для legacy, баз данных, сетевого оборудования, bare metal.
+
+## Q: Что такое inventory и ad-hoc команды в Ansible?
+level: middle
+type: practice
+freq: 2
+tags: inventory, ad-hoc
+
+**Inventory** — список управляемых хостов и групп с переменными.
+```ini
+# inventory.ini
+[web]
+web1.example.com
+web2.example.com ansible_host=10.0.1.12
+
+[db]
+db1.example.com ansible_user=admin ansible_port=2222
+
+[prod:children]
+web
+db
+
+[web:vars]
+nginx_worker_processes=4
+```
+То же в YAML (`hosts.yml`) или **динамически** из облака (плагины `aws_ec2`, `gcp_compute`, `yandex` и др. по тегам). Переменные групп и хостов удобнее держать в каталогах `group_vars/web.yml` и `host_vars/web1.example.com.yml`. Специальные группы: `all`, `ungrouped`.
+
+Проверить inventory: `ansible-inventory -i inventory.ini --graph`.
+
+**Ad-hoc команды** — разовый вызов модуля без playbook:
+```bash
+ansible all -i inventory.ini -m ping                       # проверить доступность (SSH + Python)
+ansible web -m shell -a 'uptime'
+ansible web -m apt -a 'name=htop state=present' --become   # --become = sudo
+ansible db -m service -a 'name=postgresql state=restarted' -b
+ansible all -m setup -a 'filter=ansible_distribution*'     # собрать факты
+ansible web -m copy -a 'src=./motd dest=/etc/motd' -b
+ansible all -m shell -a 'df -h /' --limit 'web1*'          # ограничить хосты
+```
+Ad-hoc удобен для быстрых проверок и разовых действий. Всё повторяемое должно жить в playbook'ах в Git.
+
+**Подключение:** по умолчанию SSH-ключи текущего пользователя, параметры `ansible_user`, `ansible_ssh_private_key_file`, `ansible_become`. Общие настройки — в `ansible.cfg` (inventory по умолчанию, `forks`, `host_key_checking`, `remote_user`).
+
+## Q: Что такое handlers, facts и шаблоны Jinja2 в Ansible?
+level: middle
+type: practice
+freq: 3
+tags: handlers, jinja2, facts
+
+```yaml
+- hosts: web
+  become: true
+  vars:
+    nginx_port: 80
+  tasks:
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+
+    - name: Deploy config
+      ansible.builtin.template:
+        src: templates/site.conf.j2
+        dest: /etc/nginx/sites-enabled/site.conf
+        validate: nginx -t -c %s      # проверить файл перед заменой
+      notify: Reload nginx            # вызвать handler, только если файл изменился
+
+    - name: Show OS
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} runs {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+```
+
+**Handlers** — задачи, которые выполняются **только при наличии изменений** (`changed`) в задачах, их вызвавших через `notify`, и **один раз в конце play**, даже если их уведомили несколько задач. Типичный случай — перезапуск сервиса после изменения конфигурации. Принудительно выполнить раньше — `meta: flush_handlers`. Если play упал до конца, handlers не выполнятся (помогает `--force-handlers`).
+
+**Facts** — сведения о хосте, которые Ansible собирает модулем `setup` в начале play: ОС, IP-адреса, память, CPU, диски (`ansible_facts['default_ipv4']['address']`). Отключить сбор для ускорения — `gather_facts: false`. Свои вычисленные значения — `set_fact`, результат задачи — `register`.
+
+**Шаблоны Jinja2** (`templates/site.conf.j2`):
+```jinja
+server {
+    listen {{ nginx_port }};
+    server_name {{ inventory_hostname }};
+{% for backend in backends %}
+    # backend {{ loop.index }}: {{ backend.host }}:{{ backend.port | default(8080) }}
+{% endfor %}
+{% if enable_ssl | bool %}
+    listen 443 ssl;
+{% endif %}
+}
+```
+Фильтры: `default`, `upper`, `join`, `to_nice_yaml`, `regex_replace`, `ipaddr`. Переменные других хостов: `hostvars['db1']['ansible_host']`, группы: `groups['db']`.
+
+**Модуль `template` vs `copy`:** `template` рендерит Jinja2 на управляющей машине и копирует результат, `copy` копирует файл как есть.

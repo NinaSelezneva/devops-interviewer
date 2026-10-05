@@ -263,3 +263,99 @@ tags: метрики, логирование, filebeat, опыт
 - стоимость хранения — сэмплирование debug-логов, разные ретеншны по классам, переход на Loki;
 - высокая кардинальность метрик — лимиты и relabeling;
 - связь сигналов: `trace_id` в логах, exemplars в метриках, переходы между ними в Grafana.
+
+## Q: Что такое exporter? Как добавить новый сервис в мониторинг Prometheus?
+level: middle
+type: practice
+freq: 3
+tags: prometheus, exporter
+
+**Exporter** — программа, которая собирает метрики из системы, не умеющей отдавать их в формате Prometheus, и публикует их на HTTP-эндпоинте `/metrics`:
+- **node_exporter** (порт 9100) — CPU, память, диски, сеть хоста;
+- **blackbox_exporter** — проверки «снаружи»: HTTP-коды, TLS-сертификаты, TCP, ICMP, DNS;
+- **postgres_exporter**, **mysqld_exporter**, **redis_exporter**, **nginx-prometheus-exporter**, **kafka_exporter**;
+- **kube-state-metrics** — состояние объектов Kubernetes; **cAdvisor** — метрики контейнеров.
+
+Собственные приложения инструментируются **клиентской библиотекой** Prometheus (или OpenTelemetry) и отдают `/metrics` сами.
+
+Формат метрик (text exposition):
+```
+# HELP http_requests_total Total HTTP requests
+# TYPE http_requests_total counter
+http_requests_total{method="GET",code="200"} 1027
+```
+
+**Добавить цель — статически** (`prometheus.yml`):
+```yaml
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ['10.0.1.10:9100', '10.0.1.11:9100']
+        labels: { env: prod }
+  - job_name: api
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['api.internal:8080']
+```
+Применить: `curl -X POST http://prometheus:9090/-/reload` (при `--web.enable-lifecycle`) или SIGHUP. Проверка — страница **Status → Targets** (состояние UP/DOWN и последняя ошибка) и запрос `up{job="api"}`.
+
+**Через service discovery:** `kubernetes_sd_configs`, `consul_sd_configs`, `ec2_sd_configs`, `file_sd_configs` + `relabel_configs`, чтобы выбрать нужные цели и сформировать метки.
+
+**В Kubernetes с Prometheus Operator** — ресурс `ServiceMonitor`:
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api
+  labels: { release: kube-prometheus-stack }   # должна совпадать с serviceMonitorSelector
+spec:
+  selector: { matchLabels: { app: api } }       # метки Service
+  endpoints:
+  - port: http-metrics                           # ИМЯ порта в Service
+    interval: 30s
+```
+Частые причины, почему цель не появилась: не совпали метки ServiceMonitor с селектором Prometheus, указан номер порта вместо имени, NetworkPolicy закрывает доступ, неверный `metrics_path`.
+
+## Q: Как создать дашборд в Grafana и настроить простой алерт?
+level: middle
+type: practice
+freq: 2
+tags: grafana, алертинг
+
+**Grafana** — визуализация и алертинг поверх разных источников данных (**data sources**): Prometheus, Loki, Elasticsearch, PostgreSQL, ClickHouse, облачные мониторинги.
+
+**Дашборд:**
+1. Добавить data source (URL Prometheus).
+2. Создать панель (**panel**), выбрать визуализацию: Time series, Stat, Gauge, Table, Heatmap (для гистограмм латентности), Logs.
+3. Написать запрос PromQL, например RPS по статусам: `sum by (code) (rate(http_requests_total{job="api"}[5m]))`.
+4. Настроить единицы измерения (req/s, ms, %, bytes), пороги цветов, легенду (`{{code}}`).
+5. **Переменные** дашборда (`$env`, `$service`, `$instance`) — выпадающие списки, один дашборд для всех сервисов: `label_values(up, job)`.
+6. Сохранить и экспортировать в JSON. Хранить в Git и разворачивать через **provisioning** (файлы или ConfigMap с sidecar в Kubernetes), Terraform-провайдер или Grafonnet, а не только кликами в UI.
+
+Не надо изобретать с нуля: на grafana.com есть готовые дашборды (Node Exporter Full и др.), kube-prometheus-stack ставит набор дашбордов для Kubernetes.
+
+**Хороший дашборд сервиса:** сверху — главное (RED-метрики и SLO), ниже — зависимости и ресурсы. Не больше 10–15 панелей, понятные названия и описания.
+
+**Алерт в Prometheus** (правило в отдельном файле, отправка через Alertmanager):
+```yaml
+groups:
+- name: api
+  rules:
+  - alert: ApiHighErrorRate
+    expr: |
+      sum(rate(http_requests_total{job="api",code=~"5.."}[5m]))
+        / sum(rate(http_requests_total{job="api"}[5m])) > 0.05
+    for: 10m                         # условие должно держаться 10 минут
+    labels: { severity: critical, team: backend }
+    annotations:
+      summary: "API: больше 5% ошибок"
+      runbook_url: https://wiki.example.com/runbooks/api-errors
+  - alert: InstanceDown
+    expr: up == 0
+    for: 5m
+    labels: { severity: warning }
+```
+Alertmanager маршрутизирует алерты по меткам (`team`, `severity`) в Slack, Telegram, почту, PagerDuty, группирует их и позволяет ставить silence на время работ.
+
+**Grafana Alerting** — альтернатива: правила создаются в Grafana поверх любых источников (в том числе логов), есть contact points и notification policies. Удобно, когда источники не только Prometheus.

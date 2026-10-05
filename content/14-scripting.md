@@ -159,3 +159,53 @@ Go-инструменты: Kubernetes, Docker, Terraform, Prometheus, etcd, Helm
 - Сильная стандартная библиотека (net/http, crypto), client-go и controller-runtime для Kubernetes.
 
 Нужно ли программировать: на senior-уровне — **да**, ожидается уверенное владение хотя бы одним языком помимо Bash (Python или Go): автоматизация с API облаков, CLI-утилиты, Kubernetes-операторы и контроллеры, плагины, чтение кода приложений при отладке, понимание того, как работают разработчики (тесты, ревью, структура проекта). Код автоматизации должен соответствовать тем же стандартам: тесты, линтеры, ревью, версионирование.
+
+## Q: Напишите bash-скрипт для бэкапа каталога с ротацией старых копий.
+level: middle
+type: practice
+freq: 3
+tags: bash, бэкап
+
+```bash
+#!/usr/bin/env bash
+# Бэкап каталога в архив с датой, хранение последних N дней, лог и код возврата для мониторинга.
+set -Eeuo pipefail
+
+SRC_DIR=${1:?"Usage: $0 <source_dir> [backup_dir] [keep_days]"}
+BACKUP_DIR=${2:-/backup}
+KEEP_DAYS=${3:-7}
+NAME=$(basename "$SRC_DIR")
+STAMP=$(date +%F_%H-%M-%S)
+ARCHIVE="$BACKUP_DIR/${NAME}_${STAMP}.tar.gz"
+LOCK="/tmp/backup_${NAME}.lock"
+
+log() { echo "$(date '+%F %T') [$1] ${*:2}" >&2; }
+
+# не запускаться параллельно (например, если прошлый запуск из cron ещё идёт)
+exec 9>"$LOCK"
+flock -n 9 || { log WARN "another backup is running"; exit 0; }
+
+[[ -d "$SRC_DIR" ]] || { log ERROR "source $SRC_DIR not found"; exit 1; }
+mkdir -p "$BACKUP_DIR"
+
+log INFO "creating $ARCHIVE"
+tar -czf "$ARCHIVE.tmp" -C "$(dirname "$SRC_DIR")" "$NAME"
+mv "$ARCHIVE.tmp" "$ARCHIVE"          # атомарно: незаконченный архив не выглядит готовым
+tar -tzf "$ARCHIVE" > /dev/null       # проверка, что архив читается
+
+log INFO "removing backups older than $KEEP_DAYS days"
+find "$BACKUP_DIR" -maxdepth 1 -name "${NAME}_*.tar.gz" -mtime +"$KEEP_DAYS" -print -delete
+
+log INFO "done: $(du -h "$ARCHIVE" | cut -f1)"
+```
+Запуск по расписанию: `0 2 * * * /opt/scripts/backup.sh /var/www /backup 14 >> /var/log/backup.log 2>&1`.
+
+**Что показывает уровень кандидата:**
+- `set -Eeuo pipefail`, проверка аргументов, кавычки вокруг переменных;
+- защита от параллельного запуска (`flock`);
+- запись во временный файл и атомарное переименование;
+- **проверка** созданного бэкапа;
+- ротация через `find -mtime -delete` с узким шаблоном имени (чтобы случайно не удалить чужие файлы);
+- осмысленные коды возврата и лог.
+
+**Как развить решение:** копия **вне сервера** (S3 через `aws s3 cp` или `rclone`, правило 3-2-1), шифрование (`gpg`, `age`), мониторинг (метрика времени последнего успешного бэкапа через textfile collector node_exporter или heartbeat в Healthchecks), регулярная проверка восстановления. Для серьёзных задач — готовые инструменты: restic, borg, для баз данных — pgBackRest/WAL-G.

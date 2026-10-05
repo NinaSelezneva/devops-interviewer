@@ -240,8 +240,18 @@
   const parseTopics = (params) => new Set((params.get('topics') || '').split(',').filter((id) => TOPIC.has(id)));
 
   // ---------- Экран: тренировка ----------
-  function buildQueue(topicIds, mode, size) {
-    const pool = ALL.filter((q) => topicIds.includes(q.topic));
+  // Выбранный уровень запоминается в браузере и используется в тренировке и собеседовании
+  const LEVEL_KEY = 'devops-interviewer:level';
+  const savedLevel = () => { try { return localStorage.getItem(LEVEL_KEY) || 'all'; } catch { return 'all'; } };
+  const saveLevel = (v) => { try { localStorage.setItem(LEVEL_KEY, v); } catch { /* хранилище недоступно */ } };
+  const levelSelect = (current) => `<select id="level">
+      <option value="all" ${current === 'all' ? 'selected' : ''}>Все уровни</option>
+      <option value="middle" ${current === 'middle' ? 'selected' : ''}>Только Middle</option>
+      <option value="senior" ${current === 'senior' ? 'selected' : ''}>Только Senior</option>
+    </select>`;
+
+  function buildQueue(topicIds, mode, size, level = 'all') {
+    const pool = ALL.filter((q) => topicIds.includes(q.topic) && (level === 'all' || q.level === level));
     const now = Date.now();
     if (mode === 'random') return shuffle(pool).slice(0, size);
     const due = pool.filter((q) => isDue(q.id, now)).sort((a, b) => store.cards[a.id].due - store.cards[b.id].due);
@@ -256,7 +266,8 @@
     const pre = parseTopics(params);
     const selected = pre.size ? pre : new Set(TOPICS.map((t) => t.id));
     const mode = params.get('mode') || 'smart';
-    if (params.get('autostart')) { runTraining(buildQueue([...selected], mode, 20)); return; }
+    const level = params.get('level') || savedLevel();
+    if (params.get('autostart')) { runTraining(buildQueue([...selected], mode, 20, level)); return; }
     app.innerHTML = `
       <h1>Тренировка карточками</h1>
       <p class="lead">Прочитайте вопрос, ответьте вслух или письменно, затем откройте эталон и оцените себя.
@@ -271,13 +282,16 @@
           </select>
           <strong>Карточек</strong>
           <select id="size"><option>10</option><option selected>20</option><option>40</option><option value="1000">Все</option></select>
+          <strong>Уровень</strong>${levelSelect(level)}
         </div>
         <div><button class="btn primary" id="start">▶ Начать</button> <span class="hint" id="setup-hint"></span></div>
       </div>`;
     const setup = document.getElementById('setup');
     const getTopics = bindTopicChecks(setup);
     document.getElementById('start').addEventListener('click', () => {
-      const queue = buildQueue(getTopics(), document.getElementById('mode').value, Number(document.getElementById('size').value));
+      const lvl = document.getElementById('level').value;
+      saveLevel(lvl);
+      const queue = buildQueue(getTopics(), document.getElementById('mode').value, Number(document.getElementById('size').value), lvl);
       if (!queue.length) { document.getElementById('setup-hint').textContent = 'Нет подходящих вопросов: выберите темы или другой режим.'; return; }
       runTraining(queue);
     });
@@ -381,7 +395,7 @@
         <div class="row">
           <strong>Вопросов</strong><select id="count"><option>5</option><option selected>10</option><option>15</option><option>20</option></select>
           <strong>Время на ответ</strong><select id="time"><option value="120">2 мин</option><option value="180" selected>3 мин</option><option value="300">5 мин</option><option value="0">Без таймера</option></select>
-          <strong>Уровень</strong><select id="level"><option value="all">Все</option><option value="senior">Только Senior</option><option value="middle">Только Middle</option></select>
+          <strong>Уровень</strong>${levelSelect(savedLevel())}
         </div>
         <div><button class="btn primary" id="start">🎤 Начать собеседование</button> <span class="hint" id="setup-hint"></span></div>
       </div>`;
@@ -389,7 +403,9 @@
     const getTopics = bindTopicChecks(setup);
     document.getElementById('start').addEventListener('click', () => {
       const topics = getTopics();
-      const qs = pickInterview(topics, Number(document.getElementById('count').value), document.getElementById('level').value);
+      const lvl = document.getElementById('level').value;
+      saveLevel(lvl);
+      const qs = pickInterview(topics, Number(document.getElementById('count').value), lvl);
       if (!qs.length) { document.getElementById('setup-hint').textContent = 'Выберите хотя бы одну тему.'; return; }
       runInterview(qs, Number(document.getElementById('time').value));
     });

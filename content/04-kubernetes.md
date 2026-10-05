@@ -471,3 +471,235 @@ spec:
     min: { cpu: 50m, memory: 64Mi }
 ```
 Вместе они дают multi-tenant кластер: квота делит ресурсы между командами, LimitRange не даёт одному поду забрать всё и подставляет значения по умолчанию, чтобы поды без requests проходили квоту.
+
+## Q: Что такое ConfigMap и Secret? Как передать их в под?
+level: middle
+type: practice
+freq: 3
+tags: configmap, secret
+
+**ConfigMap** — неконфиденциальная конфигурация (ключ-значение или целые файлы). **Secret** — то же самое для чувствительных данных: пароли, токены, TLS-сертификаты. Значения в Secret хранятся в **base64 — это кодирование, а не шифрование**. Защиту дают RBAC, шифрование etcd и внешние хранилища секретов.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: app-config }
+data:
+  LOG_LEVEL: info
+  app.yaml: |
+    cache:
+      ttl: 60
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: app-secrets }
+type: Opaque
+stringData:                     # stringData — без ручного base64
+  DB_PASSWORD: s3cr3t
+```
+Создать из командной строки: `kubectl create configmap app-config --from-file=app.yaml --from-literal=LOG_LEVEL=info`, `kubectl create secret generic app-secrets --from-literal=DB_PASSWORD=...`.
+
+**Способы передачи в под:**
+```yaml
+containers:
+- name: app
+  env:
+  - name: LOG_LEVEL                          # 1. одна переменная
+    valueFrom: { configMapKeyRef: { name: app-config, key: LOG_LEVEL } }
+  - name: DB_PASSWORD
+    valueFrom: { secretKeyRef: { name: app-secrets, key: DB_PASSWORD } }
+  envFrom:                                   # 2. все ключи как переменные
+  - configMapRef: { name: app-config }
+  volumeMounts:                              # 3. как файлы
+  - { name: config, mountPath: /etc/app, readOnly: true }
+volumes:
+- name: config
+  configMap: { name: app-config }
+```
+
+**Важные нюансы:**
+- **Переменные окружения не обновляются** при изменении ConfigMap — нужен перезапуск пода (`kubectl rollout restart deployment/app`). Файлы из volume обновляются автоматически (с задержкой до минуты), но только если не используется `subPath`, и приложение должно само перечитать файл.
+- Частый приём для автоматического рестарта: добавить хеш конфигурации в аннотацию шаблона пода (в Helm — `checksum/config`) или использовать Reloader.
+- Если ConfigMap или Secret не существует, под не стартует (`CreateContainerConfigError`), если ссылка не помечена `optional: true`.
+- Ограничение размера — 1 МБ.
+- `immutable: true` для неизменяемых конфигураций снижает нагрузку на API-сервер.
+- Секреты в Git хранить только зашифрованными (Sealed Secrets, SOPS) или брать из Vault через External Secrets Operator.
+
+## Q: Что такое namespace, labels, selectors и annotations в Kubernetes?
+level: middle
+type: theory
+freq: 2
+tags: namespace, labels
+
+**Namespace** — логическое разделение кластера: команды, окружения, приложения.
+- Имена ресурсов уникальны внутри namespace.
+- На namespace навешиваются RBAC, ResourceQuota, LimitRange, NetworkPolicy, Pod Security.
+- Системные: `default`, `kube-system`, `kube-public`, `kube-node-lease`.
+- Некоторые ресурсы не принадлежат namespace: Node, PersistentVolume, StorageClass, ClusterRole, CRD, сами Namespace (`kubectl api-resources --namespaced=false`).
+- DNS между namespace: `service.namespace.svc.cluster.local`.
+- Namespace — **не граница сетевой изоляции**: без NetworkPolicy поды разных namespace видят друг друга.
+
+**Labels** — пары ключ-значение на объектах для **идентификации и выборки**: `app: api`, `tier: backend`, `env: prod`. Рекомендуемые: `app.kubernetes.io/name`, `app.kubernetes.io/instance`, `app.kubernetes.io/version`, `app.kubernetes.io/part-of`.
+
+**Selectors** — выборка объектов по меткам. На них построена связь объектов друг с другом:
+- Service находит свои поды по `selector`;
+- Deployment/ReplicaSet управляет подами по `matchLabels`;
+- NetworkPolicy, PDB, HPA, nodeSelector тоже используют метки.
+
+```bash
+kubectl get pods -l app=api,env=prod
+kubectl get pods -l 'env in (prod,stage)'
+kubectl label pod api-xyz debug=true
+```
+Частая ошибка: Service не видит поды из-за несовпадения меток (`kubectl get endpoints <svc>` пустой).
+
+**Annotations** — тоже ключ-значение, но **не для выборки**, а для произвольных метаданных и настройки инструментов: `prometheus.io/scrape: "true"`, настройки Ingress-контроллера (`nginx.ingress.kubernetes.io/rewrite-target`), `kubernetes.io/change-cause`, информация о сборке и владельце. Могут быть большими (до 256 КБ суммарно).
+
+## Q: Какие команды kubectl вы используете чаще всего?
+level: middle
+type: practice
+freq: 3
+tags: kubectl
+
+```bash
+# Контекст и namespace
+kubectl config get-contexts
+kubectl config use-context prod
+kubectl config set-context --current --namespace=shop     # или kubens / kubectx
+
+# Просмотр
+kubectl get pods -o wide                     # IP и нода
+kubectl get all -n shop
+kubectl get pod api-xyz -o yaml              # полный манифест с status
+kubectl describe pod api-xyz                 # события — первое место для диагностики
+kubectl get events --sort-by=.lastTimestamp
+kubectl top pods --sort-by=memory            # нужен metrics-server
+kubectl explain deployment.spec.strategy     # документация по полям
+
+# Логи и отладка
+kubectl logs api-xyz -c app --previous -f --tail=100
+kubectl logs -l app=api --all-containers --since=15m
+kubectl exec -it api-xyz -- sh
+kubectl port-forward svc/api 8080:80         # доступ к сервису с ноутбука
+kubectl debug -it api-xyz --image=nicolaka/netshoot --target=app
+kubectl cp api-xyz:/tmp/dump.hprof ./dump.hprof
+
+# Изменения
+kubectl apply -f manifests/                  # декларативно
+kubectl diff -f manifests/                   # что изменится
+kubectl scale deployment api --replicas=5
+kubectl set image deployment/api app=registry/api:1.5.0
+
+# Деплой и откат
+kubectl rollout status deployment/api
+kubectl rollout history deployment/api
+kubectl rollout undo deployment/api --to-revision=3
+kubectl rollout restart deployment/api       # перезапустить поды (например, после смены ConfigMap)
+
+# Ноды
+kubectl cordon node-1; kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
+kubectl uncordon node-1
+
+# Права
+kubectl auth can-i create deployments -n shop
+```
+Полезные инструменты: **k9s** (терминальный UI), kubectx/kubens, stern (логи нескольких подов), алиас `k=kubectl` и автодополнение. На проде — осторожность с `delete` и обязательная проверка текущего контекста.
+
+## Q: Что такое Helm? Как устроен чарт и как обновлять и откатывать релизы?
+level: middle
+type: practice
+freq: 3
+tags: helm
+
+**Helm** — пакетный менеджер для Kubernetes. **Чарт** — шаблонизированный набор манифестов; **релиз** — установленный экземпляр чарта в кластере с конкретными значениями.
+
+**Структура чарта:**
+```
+mychart/
+  Chart.yaml          # имя, версия чарта (version) и приложения (appVersion), зависимости
+  values.yaml         # значения по умолчанию
+  values.schema.json  # (опционально) валидация values
+  templates/
+    deployment.yaml   # шаблоны Go template + функции Sprig
+    service.yaml
+    _helpers.tpl      # именованные шаблоны (метки, имена)
+    NOTES.txt         # подсказка после установки
+  charts/             # зависимости (subcharts)
+```
+Фрагмент шаблона:
+```yaml
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      containers:
+      - name: app
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        {{- with .Values.resources }}
+        resources: {{- toYaml . | nindent 10 }}
+        {{- end }}
+```
+
+**Основные команды:**
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+helm install shop ./mychart -n shop --create-namespace -f values-prod.yaml
+helm upgrade --install shop ./mychart -f values-prod.yaml --set image.tag=1.5.0 --atomic --wait
+helm list -n shop
+helm history shop -n shop
+helm rollback shop 3 -n shop
+helm template ./mychart -f values-prod.yaml    # отрендерить локально, не применяя
+helm diff upgrade shop ./mychart -f values-prod.yaml   # плагин helm-diff
+helm lint ./mychart
+helm uninstall shop -n shop
+```
+- `upgrade --install` — идемпотентная команда для CI: установит, если релиза нет.
+- `--atomic` — при неудаче автоматически откатиться; `--wait` — дождаться готовности ресурсов.
+- Приоритет значений: `values.yaml` чарта < файлы `-f` (по порядку) < `--set`.
+- История релизов хранится в Secret'ах в namespace релиза.
+
+**Хорошие практики:** фиксировать версии чартов, хранить values для каждого окружения в Git, публиковать чарты в OCI-реестр (`helm push`), не держать секреты в values открытым текстом (helm-secrets/SOPS, External Secrets), использовать Helm через GitOps (ArgoCD, Flux) или helmfile.
+
+## Q: Helm или Kustomize — что выбрать?
+level: middle
+type: theory
+freq: 2
+tags: helm, kustomize
+
+**Kustomize** — встроен в kubectl (`kubectl apply -k`). Работает **без шаблонов**: берёт обычные YAML-манифесты (**base**) и накладывает на них изменения для окружений (**overlays**) через патчи.
+```
+base/
+  deployment.yaml  service.yaml  kustomization.yaml
+overlays/
+  prod/kustomization.yaml
+```
+```yaml
+# overlays/prod/kustomization.yaml
+resources: [../../base]
+namespace: shop-prod
+images:
+- name: registry/api
+  newTag: "1.5.0"
+patches:
+- target: { kind: Deployment, name: api }
+  patch: |
+    - op: replace
+      path: /spec/replicas
+      value: 5
+configMapGenerator:
+- name: app-config
+  literals: [LOG_LEVEL=warn]     # имя получит хеш-суффикс → автоматический рестарт подов
+```
+
+| | Helm | Kustomize |
+|---|---|---|
+| Подход | шаблоны + values | патчи поверх чистого YAML |
+| Пакетирование и распространение | да: чарты, репозитории, версии, зависимости | нет |
+| Жизненный цикл | релизы, история, rollback, hooks | нет, только генерация манифестов |
+| Порог входа | шаблоны Go бывает тяжело читать и отлаживать | проще, манифесты остаются валидным YAML |
+| Готовые сторонние приложения | огромная экосистема чартов | мало |
+
+**Практический ответ:**
+- для **сторонних** приложений (ingress-nginx, Prometheus, cert-manager) — Helm-чарты;
+- для **собственных** сервисов — по вкусу команды: свой Helm-чарт (часто один общий «библиотечный» чарт на все микросервисы) или Kustomize с overlays;
+- их можно **комбинировать**: Kustomize умеет рендерить Helm-чарты (`helmCharts:`), ArgoCD поддерживает оба варианта.

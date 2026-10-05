@@ -203,3 +203,118 @@ tags: траблшутинг, state
 3. в будущем — `resource_group`/очереди в CI, чтобы apply не запускались параллельно.
 
 **Повреждённый state**: восстановить предыдущую версию из версионированного бакета, `terraform state pull/push` с осторожностью, затем `plan -refresh-only` для сверки.
+
+## Q: Из каких основных блоков состоит Terraform-конфигурация?
+level: middle
+type: theory
+freq: 3
+tags: hcl, основы
+
+```hcl
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+  }
+  backend "s3" {                         # где хранится state
+    bucket       = "tf-state-prod"
+    key          = "network/terraform.tfstate"
+    region       = "eu-central-1"
+    use_lockfile = true
+  }
+}
+
+provider "aws" {                         # плагин для работы с API
+  region = var.region
+}
+
+variable "region" {                      # входной параметр
+  type    = string
+  default = "eu-central-1"
+}
+
+locals {                                 # вычисляемые значения внутри модуля
+  common_tags = { project = "shop", env = var.env }
+}
+
+data "aws_ami" "ubuntu" {                # ЧТЕНИЕ существующих объектов (не создаёт)
+  most_recent = true
+  owners      = ["099720109477"]
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+}
+
+resource "aws_instance" "web" {          # СОЗДАНИЕ и управление объектом
+  ami           = data.aws_ami.ubuntu.id # ссылка создаёт неявную зависимость
+  instance_type = "t3.small"
+  tags          = local.common_tags
+}
+
+module "vpc" {                           # переиспользуемый набор ресурсов
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+  cidr    = "10.0.0.0/16"
+}
+
+output "web_ip" {                        # выходное значение
+  value = aws_instance.web.public_ip
+}
+```
+
+**Что спрашивают дальше:**
+- **resource vs data source**: resource создаёт и управляет объектом, data source только читает существующий.
+- **Зависимости**: неявные — через ссылки на атрибуты; явные — `depends_on`. По ним Terraform строит граф и создаёт независимые ресурсы параллельно.
+- **Meta-аргументы**: `count`, `for_each`, `depends_on`, `provider`, `lifecycle` (`create_before_destroy`, `prevent_destroy`, `ignore_changes`).
+- **Команды**: `init` → `fmt` → `validate` → `plan` → `apply`; `destroy`, `output`, `state list`, `console` (поэкспериментировать с выражениями).
+- **`.terraform.lock.hcl`** фиксирует точные версии провайдеров, его коммитят в репозиторий.
+
+## Q: Как передать значения переменных в Terraform? Какой у них приоритет?
+level: middle
+type: practice
+freq: 2
+tags: variables
+
+**Способы** (от низшего приоритета к высшему, последнее значение побеждает):
+1. `default` в блоке `variable`;
+2. переменные окружения `TF_VAR_имя` (`export TF_VAR_region=eu-west-1`);
+3. файл `terraform.tfvars` (подхватывается автоматически);
+4. `terraform.tfvars.json`;
+5. файлы `*.auto.tfvars` / `*.auto.tfvars.json` (в алфавитном порядке);
+6. `-var-file=prod.tfvars` и `-var 'region=eu-west-1'` в командной строке (в порядке указания).
+
+Если значение не задано нигде и нет default, Terraform спросит его интерактивно (в CI это ошибка, поэтому используют `-input=false`).
+
+**Описание переменной:**
+```hcl
+variable "instance_count" {
+  type        = number
+  default     = 2
+  description = "Количество инстансов"
+  validation {
+    condition     = var.instance_count > 0 && var.instance_count <= 10
+    error_message = "От 1 до 10."
+  }
+}
+
+variable "db_password" {
+  type      = string
+  sensitive = true          # скрыть из вывода plan/apply (в state всё равно попадёт!)
+}
+
+variable "subnets" {
+  type = map(object({
+    cidr = string
+    az   = string
+  }))
+}
+```
+Типы: `string`, `number`, `bool`, `list(...)`, `set(...)`, `map(...)`, `object({...})`, `tuple([...])`, `any`.
+
+**Разница между variable, locals и output:**
+- `variable` — вход модуля (параметр, задаётся снаружи);
+- `locals` — внутренние вычисления, чтобы не повторять выражения;
+- `output` — выход модуля: значения для пользователя, для других модулей (`module.vpc.vpc_id`) или других state.
+
+**Практика:** отдельный `.tfvars` на окружение (`dev.tfvars`, `prod.tfvars`), секреты не в tfvars в Git, а через `TF_VAR_` из секрет-хранилища CI или data source из Vault/Secrets Manager.

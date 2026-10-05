@@ -235,3 +235,179 @@ tags: artifactory, nexus, артефакты
 - **Политики хранения**: очистка старых snapshot-сборок и неиспользуемых образов, иначе хранилище растёт бесконтрольно.
 
 **Эксплуатация:** бэкапы (метаданные в БД + бинарные данные, часто в S3), HA (несколько узлов за балансировщиком), мониторинг места, сервисные учётки для CI с минимальными правами (push только в свои репозитории), токены вместо паролей, настройка клиентов (`settings.xml`, `.npmrc`, `pip.conf`, `registry-mirrors` в Docker/containerd).
+
+## Q: Напишите простой .gitlab-ci.yml: тесты, сборка образа и деплой.
+level: middle
+type: practice
+freq: 3
+tags: gitlab, пайплайн
+
+```yaml
+stages: [test, build, deploy]
+
+variables:
+  IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+
+default:
+  interruptible: true
+
+lint_and_test:
+  stage: test
+  image: python:3.12-slim
+  cache:
+    key: { files: [requirements.txt] }
+    paths: [.cache/pip]
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  script:
+    - pip install -r requirements.txt -r requirements-dev.txt
+    - ruff check .
+    - pytest --junitxml=report.xml
+  artifacts:
+    reports: { junit: report.xml }
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build_image:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+  script:
+    - docker build -t $IMAGE .
+    - docker push $IMAGE
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy_staging:
+  stage: deploy
+  image: alpine/helm:3.16
+  environment: { name: staging, url: https://staging.example.com }
+  script:
+    - helm upgrade --install api ./chart -n staging --set image.tag=$CI_COMMIT_SHORT_SHA --atomic --wait
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy_prod:
+  extends: deploy_staging
+  environment: { name: production, url: https://example.com }
+  script:
+    - helm upgrade --install api ./chart -n prod --set image.tag=$CI_COMMIT_SHORT_SHA --atomic --wait
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual            # ручное подтверждение
+  resource_group: production  # не запускать два деплоя в прод одновременно
+```
+
+**Что стоит объяснить:**
+- **stages** выполняются последовательно, джобы внутри стадии — параллельно. `needs:` позволяет запускать джобу сразу после нужных, не дожидаясь всей стадии.
+- **Предопределённые переменные**: `CI_COMMIT_SHORT_SHA`, `CI_REGISTRY_IMAGE`, `CI_DEFAULT_BRANCH`, `CI_PIPELINE_SOURCE` и т.д.
+- **Переменные и секреты** задаются в *Settings → CI/CD → Variables* с флагами **Masked** (скрыть в логах) и **Protected** (доступны только в защищённых ветках и тегах). Доступ к кластеру — через GitLab Agent for Kubernetes или OIDC, а не статический kubeconfig в переменной.
+- **Раннеры**: shared или свои (`gitlab-runner`), executor'ы docker, shell, kubernetes. Джобы назначаются раннерам по `tags`.
+- Вместо docker-in-docker (нужен privileged-режим) можно собирать образы через **Kaniko** или **Buildah**.
+
+## Q: Как устроен Jenkins? Declarative vs Scripted pipeline.
+level: middle
+type: practice
+freq: 2
+tags: jenkins
+
+**Архитектура:** **controller** (бывший master) хранит конфигурацию, планирует сборки, показывает UI; **агенты** (agents, nodes) выполняют сборки. Агенты подключаются по SSH или через inbound-агента (JNLP), бывают статическими или динамическими (Kubernetes plugin создаёт под на каждую сборку). Сборки на самом controller выполнять не рекомендуется (безопасность и нагрузка).
+
+Функциональность почти целиком из **плагинов**. Это и сила, и главная боль: обновления, совместимость, уязвимости.
+
+**Pipeline as code** — `Jenkinsfile` в репозитории.
+
+**Declarative** — структурированный синтаксис, проще читать и валидировать:
+```groovy
+pipeline {
+  agent { kubernetes { yamlFile 'ci/pod.yaml' } }
+  options { timeout(time: 30, unit: 'MINUTES'); disableConcurrentBuilds() }
+  environment { IMAGE = "registry.example.com/api:${env.GIT_COMMIT.take(8)}" }
+  stages {
+    stage('Test') {
+      steps { sh 'make test' }
+      post { always { junit 'reports/*.xml' } }
+    }
+    stage('Build') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'registry', usernameVariable: 'U', passwordVariable: 'P')]) {
+          sh 'echo $P | docker login -u $U --password-stdin registry.example.com && docker build -t $IMAGE . && docker push $IMAGE'
+        }
+      }
+    }
+    stage('Deploy prod') {
+      when { branch 'main' }
+      input { message 'Deploy to production?' }
+      steps { sh "helm upgrade --install api ./chart --set image.tag=${env.GIT_COMMIT.take(8)}" }
+    }
+  }
+  post { failure { slackSend channel: '#ci', message: "Failed: ${env.BUILD_URL}" } }
+}
+```
+
+**Scripted** — произвольный Groovy в блоке `node { ... }`: гибче (циклы, сложная логика), но сложнее поддерживать и легко превратить в нечитаемый код. Внутри declarative для сложной логики есть блок `script { }`.
+
+**Важное:**
+- **Shared Libraries** — общий код пайплайнов для многих репозиториев (`@Library('ci-lib') _`).
+- **Multibranch Pipeline** / Organization Folders — автоматически находят ветки и PR с Jenkinsfile.
+- **Credentials** — хранилище секретов, доступ через `withCredentials`, маскирование в логах.
+- **Configuration as Code** (JCasC) — конфигурация самого Jenkins в YAML, чтобы не настраивать вручную через UI.
+- Эксплуатация: бэкапы `JENKINS_HOME`, обновления плагинов, очистка старых сборок, controller в HA-режиме не работает (один экземпляр).
+
+Многие компании мигрируют с Jenkins на GitLab CI или GitHub Actions из-за стоимости поддержки, но в энтерпрайзе Jenkins по-прежнему очень распространён.
+
+## Q: Как устроен GitHub Actions? Что такое workflow, job, step, runner?
+level: middle
+type: practice
+freq: 2
+tags: github-actions
+
+- **Workflow** — YAML-файл в `.github/workflows/`, запускается по **событиям** (`on:`): push, pull_request, schedule (cron), workflow_dispatch (ручной запуск), release, теги.
+- **Job** — набор шагов на одном **runner**'е. Джобы по умолчанию идут параллельно, зависимости задаются через `needs`.
+- **Step** — команда (`run:`) или готовое **action** (`uses: actions/checkout@v4`).
+- **Runner** — машина исполнения: GitHub-hosted (ubuntu, windows, macos) или **self-hosted** (свои ВМ или поды через Actions Runner Controller в Kubernetes).
+
+```yaml
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write          # для OIDC
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: { python: ["3.11", "3.12"] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}", cache: pip }
+      - run: pip install -r requirements.txt && pytest
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production          # правила защиты и ручное одобрение
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-deploy   # OIDC вместо ключей
+          aws-region: eu-central-1
+      - run: ./deploy.sh
+```
+
+**Важное:**
+- **Секреты и переменные** — на уровне репозитория, environment или организации: `${{ secrets.NAME }}`.
+- **OIDC** — получение временных облачных учётных данных без хранения ключей.
+- **Переиспользование**: reusable workflows (`workflow_call`) и composite actions.
+- **Безопасность**: закреплять сторонние actions **по SHA коммита**, а не по тегу; минимальные `permissions` для `GITHUB_TOKEN`; осторожно с `pull_request_target` и подстановкой недоверенных данных (заголовок PR) в `run:` — это инъекция команд.
+- Кеш — `actions/cache` или встроенный в setup-* actions, артефакты — `actions/upload-artifact`.

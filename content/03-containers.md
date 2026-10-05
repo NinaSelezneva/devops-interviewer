@@ -254,3 +254,142 @@ docker run -p 127.0.0.1:5432:5432 postgres     # доступно только �
 **Kubernetes:** то же самое. Контейнер должен слушать 0.0.0.0, иначе Service и пробы kubelet (они ходят на IP пода) не достучатся. Sidecar-контейнеры пода, наоборот, могут общаться через `localhost`, потому что у пода один network namespace (его держит pause-контейнер).
 
 **Диагностика:** `ss -tlnp` внутри контейнера (`docker exec`, `nsenter -t <PID> -n ss -tlnp`) покажет `127.0.0.1:8080` вместо `0.0.0.0:8080` или `*:8080`.
+
+## Q: Напишите Dockerfile для Python/Node.js приложения. Какие ошибки в Dockerfile встречаются чаще всего?
+level: middle
+type: practice
+freq: 3
+tags: dockerfile
+
+```dockerfile
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# зависимости отдельным слоем — кешируются, пока не изменился requirements.txt
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+RUN useradd -r -u 10001 app
+USER app
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+```
+Для Node.js то же самое: `FROM node:22-slim`, сначала `COPY package*.json ./` + `RUN npm ci --omit=dev`, потом `COPY . .`, `USER node`, `CMD ["node", "server.js"]`.
+
+**Частые ошибки:**
+1. `COPY . .` **до** установки зависимостей → любое изменение кода сбрасывает кеш и зависимости ставятся заново.
+2. Нет `.dockerignore` → в образ попадают `.git`, `node_modules`, `.env` с секретами.
+3. Тег `latest` в `FROM` → невоспроизводимые сборки. Фиксировать версию (а лучше digest).
+4. Запуск от **root**.
+5. `apt-get update` и `apt-get install` в **разных** `RUN` → устаревший кеш списков пакетов. Нужно `RUN apt-get update && apt-get install -y --no-install-recommends pkg && rm -rf /var/lib/apt/lists/*`.
+6. Секреты через `ARG`/`ENV` или `COPY` → остаются в слоях и истории образа.
+7. **Shell-форма** `CMD python app.py` → приложение не получает SIGTERM.
+8. Приложение слушает `127.0.0.1` вместо `0.0.0.0`.
+9. Сборочные инструменты в финальном образе вместо multi-stage сборки.
+10. Много лишних слоёв и мусор (кеши пакетных менеджеров).
+
+Проверка: линтер **hadolint**, сканер Trivy, `docker history` и **dive** для анализа слоёв.
+
+## Q: Какими командами Docker вы пользуетесь каждый день? Как почистить место, занятое Docker?
+level: middle
+type: practice
+freq: 2
+tags: docker, cli
+
+```bash
+docker ps -a                          # контейнеры (все, включая остановленные)
+docker images                         # образы
+docker run -d --name web -p 8080:80 --restart unless-stopped nginx:1.27
+docker logs -f --tail 100 web         # логи
+docker exec -it web sh                # зайти внутрь работающего контейнера
+docker inspect web                    # вся конфигурация: IP, mounts, env, State
+docker inspect -f '{{.State.ExitCode}} {{.State.OOMKilled}}' web
+docker stats                          # потребление CPU и памяти в реальном времени
+docker cp web:/etc/nginx/nginx.conf . # скопировать файл из контейнера
+docker build -t app:1.0 .
+docker tag app:1.0 registry.example.com/app:1.0 && docker push registry.example.com/app:1.0
+docker stop web && docker rm web      # stop: SIGTERM, через 10 с SIGKILL
+docker network ls; docker volume ls
+```
+
+**Место на диске** (`/var/lib/docker` — частая причина заполнения диска на CI-раннерах):
+```bash
+docker system df                      # сколько занимают образы, контейнеры, volumes, кеш сборки
+docker container prune                # удалить остановленные контейнеры
+docker image prune                    # удалить «висячие» образы (<none>)
+docker image prune -a --filter "until=168h"   # все неиспользуемые образы старше недели
+docker builder prune                  # кеш BuildKit
+docker volume prune                   # ОСТОРОЖНО: удаляет неиспользуемые volumes с данными
+docker system prune -a                # всё неиспользуемое разом
+```
+Ещё одна причина роста — **логи контейнеров** (`/var/lib/docker/containers/*/*-json.log`). Лечится ограничением в `/etc/docker/daemon.json`:
+```json
+{ "log-driver": "json-file", "log-opts": { "max-size": "50m", "max-file": "3" } }
+```
+
+## Q: Чем COPY отличается от ADD, а ARG от ENV?
+level: middle
+type: theory
+freq: 2
+tags: dockerfile
+
+**COPY vs ADD:**
+- `COPY` — просто копирует файлы и каталоги из контекста сборки в образ. Предсказуем, **используйте его по умолчанию**.
+- `ADD` умеет больше: **автоматически распаковывает** локальные tar-архивы (`.tar`, `.tar.gz`) и может **скачивать по URL**. Это неявное поведение — источник сюрпризов. Скачивание по URL лучше делать через `RUN curl` с проверкой контрольной суммы (или `ADD --checksum=`).
+- Оба поддерживают `--chown=user:group` и `--chmod`. `COPY --from=build` копирует из другой стадии multi-stage сборки или из другого образа.
+
+**ARG vs ENV:**
+| | ARG | ENV |
+|---|---|---|
+| Когда доступна | только **во время сборки** | при сборке **и в работающем контейнере** |
+| Как задать | `docker build --build-arg VERSION=1.2` | в Dockerfile; переопределяется `docker run -e` |
+| Область | от объявления до конца стадии (ARG до `FROM` — только для `FROM`) | наследуется следующими стадиями от того же базового образа и контейнером |
+
+```dockerfile
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}   # передать значение ARG в runtime
+LABEL org.opencontainers.image.version=${APP_VERSION}
+```
+
+**Важно про секреты:** ни ARG, ни ENV не подходят для паролей и токенов. Значения видны в `docker history` и `docker inspect`. Для секретов на этапе сборки — `RUN --mount=type=secret,id=npmrc ...`, в runtime — переменные окружения из оркестратора или файлы секретов.
+
+## Q: Как работают restart policy и HEALTHCHECK в Docker?
+level: middle
+type: theory
+freq: 2
+tags: docker, healthcheck
+
+**Restart policy** — что делать, когда контейнер завершился:
+- `no` (по умолчанию) — не перезапускать;
+- `on-failure[:N]` — только при ненулевом коде выхода, можно ограничить число попыток;
+- `always` — всегда, в том числе после перезапуска демона Docker. Вручную остановленный контейнер поднимется снова при рестарте dockerd;
+- `unless-stopped` — как always, но не поднимает контейнер, который вы остановили вручную.
+
+Перезапуски идут с растущей задержкой. Docker **не перезапускает** контейнер, который «завис», но не завершился: для этого нужен healthcheck и внешний механизм.
+
+**HEALTHCHECK** — команда, которую Docker периодически выполняет внутри контейнера:
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://localhost:8080/health || exit 1
+```
+Статус: `starting` → `healthy` / `unhealthy`. Виден в `docker ps` и `docker inspect`.
+
+**Что даёт healthcheck:**
+- в docker compose — `depends_on: condition: service_healthy` (дождаться готовности БД);
+- в Docker Swarm — замена нездоровых задач;
+- сам Docker Engine **не перезапускает** unhealthy-контейнер автоматически (нужен оркестратор или сторонний autoheal).
+
+**В Kubernetes** инструкция `HEALTHCHECK` из Dockerfile **игнорируется**, вместо неё используются liveness, readiness и startup-пробы в манифесте пода.
+
+Подводные камни: в минималистичных образах (distroless) нет `curl`, поэтому нужна проверка встроенным бинарником приложения. Healthcheck должен быть лёгким и не зависеть от внешних систем.
