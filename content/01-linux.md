@@ -273,3 +273,54 @@ tags: лимиты, траблшутинг
 - контейнер: лимиты рантайма (`--ulimit`).
 
 Диагностика: `ls /proc/PID/fd | wc -l`, `lsof -p PID | awk '{print $5}' | sort | uniq -c` — что именно открыто. Если растёт бесконечно — **утечка** (не закрываются сокеты/файлы), поднятие лимита лишь отсрочит проблему. Много сокетов в `CLOSE_WAIT` (`ss -tan state close-wait`) — приложение не закрывает соединения со своей стороны.
+
+## Q: Какие типы юнитов systemd бывают? Какие типы сервисов и как ограничить ресурсы сервиса?
+level: senior
+type: theory
+freq: 2
+tags: systemd, cgroups
+
+**Типы юнитов** (по расширению файла):
+| Тип | Назначение |
+|---|---|
+| `.service` | процесс/демон |
+| `.socket` | сокет-активация: systemd слушает порт и запускает сервис при первом подключении |
+| `.timer` | запуск по расписанию (замена cron: `OnCalendar=`, `Persistent=`, логи в journald) |
+| `.target` | группа юнитов, точка синхронизации (`multi-user.target`) — аналог runlevel |
+| `.mount` / `.automount` | точки монтирования (генерируются из `/etc/fstab`) |
+| `.path` | запуск при изменении файла/каталога |
+| `.device` | устройства из udev |
+| `.slice` / `.scope` | узлы иерархии cgroups для группового ограничения ресурсов |
+| `.swap` | раздел подкачки |
+
+**`Type=` для `.service`** — как systemd понимает, что сервис запустился:
+- `simple` (по умолчанию) — запущен сразу после `fork()`; ошибки запуска бинарника не видны как ошибка старта;
+- `exec` — после успешного `exec()` — честнее, чем simple;
+- `forking` — классический демон, который форкается и завершает родителя; нужен `PIDFile=`;
+- `oneshot` — разовая задача, systemd ждёт завершения (часто с `RemainAfterExit=yes`);
+- `notify` — сервис сам сообщает о готовности через `sd_notify()` (`READY=1`) — самый точный вариант;
+- `dbus`, `idle`.
+
+**Основные директивы:**
+- `[Unit]`: `Description`, `Requires` (жёсткая зависимость), `Wants` (мягкая), `After`/`Before` (только порядок!), `Conflicts`, `ConditionPathExists`.
+- `[Service]`: `ExecStart`, `ExecStartPre`, `ExecReload`, `ExecStop`, `User`/`Group`, `WorkingDirectory`, `Environment`/`EnvironmentFile`, `Restart=on-failure|always`, `RestartSec`, `TimeoutStopSec`, `KillSignal`.
+- `[Install]`: `WantedBy=multi-user.target` — куда подключить юнит при `systemctl enable`.
+
+**Ограничение ресурсов** (через cgroups v2):
+```ini
+[Service]
+CPUQuota=150%        # не более 1.5 ядра
+CPUWeight=50         # относительный вес при конкуренции
+MemoryHigh=800M      # порог, после которого память активно отбирается (throttling)
+MemoryMax=1G         # жёсткий лимит → OOM-kill внутри сервиса
+TasksMax=512         # лимит процессов/потоков (защита от fork-бомбы)
+IOWeight=100
+IOReadBandwidthMax=/dev/sda 50M
+LimitNOFILE=65536    # rlimit открытых файлов (ulimit -n)
+LimitCORE=0
+```
+Применить к работающему сервису на лету: `systemctl set-property api.service MemoryMax=2G`. Посмотреть потребление: `systemd-cgtop`, `systemctl status` (Memory, Tasks, CPU).
+
+**Изоляция и безопасность**: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `ReadWritePaths=`, `CapabilityBoundingSet=`, `DynamicUser=yes`, `SystemCallFilter=`. Оценка: `systemd-analyze security api.service`.
+
+Менять юниты пакетов правильно через **drop-in**: `systemctl edit api` → `/etc/systemd/system/api.service.d/override.conf`, затем `daemon-reload`.
