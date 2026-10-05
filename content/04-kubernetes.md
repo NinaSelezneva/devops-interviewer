@@ -788,3 +788,248 @@ spec:
 - `istioctl proxy-config routes|clusters|endpoints <pod>` — что реально получил Envoy;
 - логи `istio-proxy`: **флаги ответа Envoy** в access log многое объясняют: `UF` (upstream connection failure), `UH` (нет здоровых эндпоинтов), `URX` (исчерпаны ретраи), `NR` (нет маршрута), `UC` (апстрим закрыл соединение);
 - типичные проблемы: **503 после включения STRICT mTLS** (клиент без sidecar), ретраи mesh **поверх** ретраев приложения (лавина запросов), sidecar ещё не готов, когда приложение уже делает запросы при старте (`holdApplicationUntilProxyStarts`), Job'ы не завершаются из-за живого sidecar (решено native sidecars в Kubernetes 1.29+).
+
+## Q: Что такое init-контейнеры и sidecar-контейнеры? Что изменили native sidecars?
+level: middle
+type: theory
+freq: 2
+tags: pod, init, sidecar
+
+**Init-контейнеры** запускаются **до** основных контейнеров пода, **по очереди**, каждый должен **успешно завершиться**. Если init-контейнер падает, kubelet перезапускает его (по `restartPolicy` пода), а основные контейнеры не стартуют.
+
+Применение:
+- дождаться зависимости (`until nc -z db 5432; do sleep 2; done` — хотя приложению всё равно лучше уметь ретраить);
+- подготовить данные: миграции схемы (с оговорками), скачивание конфигурации или моделей, генерация файлов в общий `emptyDir`;
+- выставить права на volume (`chown`), параметры ядра в привилегированном init-контейнере;
+- образ init-контейнера может содержать утилиты, которых нет (и не должно быть) в основном образе.
+
+**Sidecar** — вспомогательный контейнер, работающий **параллельно** с основным весь срок жизни пода: прокси service mesh (Envoy), агент сбора логов, Vault Agent, cloud-sql-proxy, синхронизация файлов.
+
+**Проблемы «старых» sidecar** (просто второй контейнер в `containers`):
+- нет гарантии порядка: приложение стартует раньше прокси и не может сделать первые запросы;
+- **Job не завершается**, пока жив sidecar (основной контейнер закончил работу, а Envoy работает вечно);
+- при остановке пода sidecar может завершиться раньше приложения и оборвать его последние запросы.
+
+**Native sidecars** (стабильны с Kubernetes 1.33, доступны с 1.29): sidecar объявляется в **`initContainers` с `restartPolicy: Always`**:
+```yaml
+spec:
+  initContainers:
+  - name: log-shipper
+    image: fluent-bit:3
+    restartPolicy: Always          # это делает init-контейнер sidecar'ом
+  - name: migrate
+    image: app:1.4
+    command: ["./migrate"]         # обычный init — выполнится после старта sidecar
+  containers:
+  - name: app
+    image: app:1.4
+```
+Гарантии: sidecar стартует **до** основных контейнеров (и следующих init-контейнеров) и может иметь startupProbe; живёт весь срок пода и перезапускается при падении; **не мешает завершению Job**; при остановке пода завершается **после** основных контейнеров.
+
+## Q: Namespace завис в состоянии Terminating. Почему и как это исправить?
+level: senior
+type: scenario
+freq: 2
+tags: finalizers, траблшутинг
+
+При удалении namespace Kubernetes удаляет все объекты в нём. Namespace остаётся в `Terminating`, пока внутри что-то не удалилось. Почти всегда причина — **finalizers**.
+
+**Finalizer** — метка в `metadata.finalizers`, которая говорит: «прежде чем удалить объект, контроллер X должен выполнить очистку» (удалить облачный балансировщик, диск, DNS-запись, внешнюю БД). Объект получает `deletionTimestamp`, но удаляется из etcd только после того, как все finalizers сняты соответствующими контроллерами.
+
+**Почему зависает:**
+- контроллер, который должен снять finalizer, **удалён или не работает** (удалили оператор раньше его ресурсов; сломался ingress- или storage-контроллер);
+- **API-сервис агрегации недоступен** (`kubectl get apiservice` → `False (MissingEndpoints)`, часто metrics-server или удалённый адаптер): namespace-контроллер не может перечислить ресурсы этого API и не может завершить удаление;
+- внешний ресурс не удаётся удалить (нет прав в облаке, ресурс защищён).
+
+**Диагностика:**
+```bash
+kubectl get namespace shop -o json | jq '.status.conditions'
+# NamespaceDeletionContentFailure / NamespaceFinalizersRemaining подскажут, что мешает
+kubectl api-resources --verbs=list --namespaced -o name \
+  | xargs -n 1 kubectl get --show-kind --ignore-not-found -n shop
+kubectl get apiservice | grep False
+```
+
+**Исправление (правильный порядок):**
+1. Починить причину: вернуть контроллер или оператор, починить или удалить сломанный APIService.
+2. Если контроллера больше не будет — **осознанно** снять finalizer с конкретного объекта:
+   `kubectl patch <kind>/<name> -n shop --type=merge -p '{"metadata":{"finalizers":null}}'`
+   Понимая последствия: внешние ресурсы (балансировщик, диск, запись в БД) **останутся** и их нужно удалить вручную, иначе они будут стоить денег или висеть мусором.
+3. Крайняя мера для самого namespace — удаление `spec.finalizers` через `/finalize` API. Это скрывает проблему, а не решает её.
+
+**Профилактика:** удалять ресурсы операторов **до** удаления самого оператора (в Helm и GitOps — порядок удаления), следить за состоянием APIService.
+
+## Q: Нода перешла в состояние NotReady. Как диагностировать?
+level: senior
+type: scenario
+freq: 3
+tags: node, траблшутинг
+
+**NotReady** означает, что **kubelet** перестал сообщать о здоровье ноды API-серверу (lease не обновляется) или сам сообщает о проблеме. Через некоторое время (по умолчанию около 5 минут) поды с ноды начинают выселяться (taint `node.kubernetes.io/unreachable` / `not-ready` с `NoExecute` и `tolerationSeconds: 300`).
+
+**1. Со стороны кластера:**
+```bash
+kubectl describe node node-3
+# Conditions: Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable
+# Events и время последнего heartbeat
+kubectl get pods -A -o wide --field-selector spec.nodeName=node-3
+```
+
+**2. На самой ноде** (если доступна по SSH или через консоль облака):
+- `systemctl status kubelet`, `journalctl -u kubelet -e` — почему kubelet упал или не может работать: сертификат истёк, не может связаться с API-сервером, ошибки CNI (`network plugin is not ready: cni config uninitialized`), ошибки рантайма;
+- `systemctl status containerd`, `crictl ps`, `crictl info`;
+- **ресурсы**: `df -h` и `df -i` (заполненный диск под `/var/lib/containerd` или `/var/lib/kubelet` → DiskPressure), `free -m`, OOM killer в `dmesg` (убил kubelet или containerd), исчерпание PID;
+- **сеть**: доступен ли API-сервер (`curl -k https://<apiserver>:6443/healthz`), DNS, MTU, файрвол, маршруты;
+- **время**: рассинхронизация часов ломает проверку сертификатов;
+- **ядро и железо**: `dmesg -T` — ошибки дисков, сетевой карты, kernel panic, зависания.
+
+**3. Нода недоступна целиком** — проблема ВМ или железа: консоль облака, статус-проверки инстанса, гипервизор, сеть (security groups, NACL после изменений).
+
+**Частые причины:** заполненный диск (образы, логи контейнеров, emptyDir), нехватка памяти без резерва для системы (`systemReserved` / `kubeReserved` не заданы → OOM убивает системные процессы), сбой CNI-пода на ноде, истёкшие сертификаты kubelet (без ротации), проблемы с рантаймом, сетевая изоляция ноды.
+
+**Митигация:** `kubectl cordon` + `drain` (если нода частично работает), в облаке — **заменить ноду** (автоматически через node auto-repair в managed-кластерах, Machine Health Checks в Cluster API), затем разбираться с причиной по логам, если они сохранились.
+
+## Q: Что такое eviction? Почему поды выселяются с ноды и как это предотвратить?
+level: senior
+type: theory
+freq: 2
+tags: eviction, ресурсы
+
+**Eviction** — kubelet принудительно завершает поды, когда на ноде заканчивается несжимаемый ресурс:
+- **memory.available** (по умолчанию порог < 100Mi);
+- **nodefs.available / imagefs.available** — свободное место на диске (по умолчанию < 10% / < 15%), а также inode'ы;
+- **pid.available**.
+
+При превышении порога нода получает условие `MemoryPressure` / `DiskPressure` / `PIDPressure` и taint, новые поды на неё не планируются, а kubelet выселяет поды в порядке:
+1. поды, **превысившие свои requests** по этому ресурсу (больше всего сверх запроса — первыми);
+2. с учётом **PriorityClass**;
+3. по QoS: фактически **BestEffort** → **Burstable** → **Guaranteed** (последним).
+Выселенный под получает статус `Failed` с причиной `Evicted`; контроллер (ReplicaSet) создаёт замену на другой ноде.
+
+**Ephemeral storage** — частая неочевидная причина выселений: логи контейнеров, записываемый слой контейнера и `emptyDir` расходуют диск ноды. Под можно ограничить:
+```yaml
+resources:
+  requests: { ephemeral-storage: 1Gi }
+  limits:   { ephemeral-storage: 4Gi }   # превышение → под выселяется
+volumes:
+- name: tmp
+  emptyDir: { sizeLimit: 2Gi }
+```
+
+**Мягкие и жёсткие пороги:** `evictionHard` (выселение сразу), `evictionSoft` + grace period. **Резервирование** ресурсов для системы: `systemReserved`, `kubeReserved` — иначе поды съедают всю память, и OOM убивает kubelet или containerd, а нода становится NotReady.
+
+**Отличия от других механизмов:**
+- **OOMKilled** — ядро убивает контейнер при превышении его собственного **limit** памяти (cgroup), это не eviction;
+- **preemption** — планировщик вытесняет поды с низким приоритетом, чтобы разместить высокоприоритетный под;
+- **API-initiated eviction** — при `kubectl drain`, уважает **PodDisruptionBudget**. Выселение kubelet'ом из-за нехватки ресурсов PDB **не учитывает**.
+
+**Как предотвратить:**
+- корректные **requests** по реальному потреблению (поды сверх requests выселяются первыми);
+- requests = limits для памяти у критичных сервисов (Guaranteed);
+- лимиты ephemeral-storage и `sizeLimit` для emptyDir, ротация логов контейнеров (`containerLogMaxSize` в kubelet);
+- очистка образов (kubelet делает GC образов по порогам `imageGCHighThresholdPercent`);
+- **PriorityClass** для критичных компонентов;
+- мониторинг давления на нодах и алерты до наступления порогов.
+
+## Q: Что такое admission controllers и webhooks? Какие с ними бывают проблемы?
+level: senior
+type: theory
+freq: 2
+tags: admission, политики
+
+**Admission controllers** — этап обработки запроса в API-сервере **после аутентификации и авторизации, но до записи в etcd**. Могут **изменить** объект (mutating) или **отклонить** запрос (validating).
+
+**Встроенные контроллеры** (включаются флагами API-сервера): `NamespaceLifecycle`, `LimitRanger` (подставляет значения по умолчанию), `ResourceQuota`, `ServiceAccount`, `DefaultStorageClass`, `PodSecurity` (Pod Security Admission), `NodeRestriction` и др.
+
+**Динамические webhooks:**
+- **MutatingAdmissionWebhook** — внешний HTTPS-сервис изменяет объект: инжекция sidecar (Istio, Vault Agent), добавление меток и значений по умолчанию;
+- **ValidatingAdmissionWebhook** — внешний сервис разрешает или запрещает: **Kyverno**, **OPA Gatekeeper**, проверки подписей образов, кастомные правила;
+- **ValidatingAdmissionPolicy** (стабильна с 1.30) — правила на **CEL** выполняются **внутри API-сервера** без внешнего webhook: быстрее и надёжнее для простых проверок. Появляется и **MutatingAdmissionPolicy**.
+
+Порядок: mutating webhooks → валидация схемы → validating webhooks.
+
+**Проблемы и риски:**
+- **Webhook недоступен** → при `failurePolicy: Fail` API-сервер **отклоняет все подходящие запросы**. Если правило охватывает поды во всех namespace, а сам webhook работает как под, который не может запуститься, — получаем «мёртвую петлю»: кластер не может создать ни одного пода, включая сам webhook. При `failurePolicy: Ignore` — политики молча не применяются.
+- **Латентность**: каждый webhook добавляет задержку к запросам API, особенно при массовых операциях.
+- Неправильный `namespaceSelector` / `objectSelector` — webhook перехватывает системные компоненты (`kube-system`).
+- Истёкший TLS-сертификат webhook'а — та же картина, что и недоступность.
+
+**Хорошие практики:**
+- исключать `kube-system` и namespace самого webhook'а через `namespaceSelector`;
+- несколько реплик webhook'а, PDB, PriorityClass;
+- узкие правила (`rules`: только нужные ресурсы и операции), разумный `timeoutSeconds`;
+- для критичных правил безопасности — `Fail`, для вспомогательных — `Ignore`;
+- мониторинг метрик API-сервера: `apiserver_admission_webhook_rejection_count`, латентность webhooks;
+- простые проверки переносить в ValidatingAdmissionPolicy.
+
+## Q: Напишите NetworkPolicy: доступ к БД только от приложения, запрет остального трафика.
+level: middle
+type: practice
+freq: 2
+tags: networkpolicy, безопасность
+
+**NetworkPolicy** работает только при поддержке CNI (Calico, Cilium, Antrea и др.; Flannel без дополнений — нет). Правила **аддитивны**: если под выбран хотя бы одной политикой определённого направления (Ingress или Egress), разрешено **только** то, что явно описано во всех политиках; иначе — всё разрешено.
+
+**1. Запрет всего по умолчанию в namespace:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: shop }
+spec:
+  podSelector: {}                 # все поды namespace
+  policyTypes: [Ingress, Egress]
+```
+
+**2. Разрешить DNS всем подам** (иначе с запретом egress сломается резолв имён — самая частая ошибка):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns, namespace: shop }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: kube-system }
+      podSelector:
+        matchLabels: { k8s-app: kube-dns }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+```
+
+**3. БД принимает трафик только от API на порт 5432:**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: db-from-api, namespace: shop }
+spec:
+  podSelector: { matchLabels: { app: postgres } }
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector: { matchLabels: { app: api } }
+    ports: [{ protocol: TCP, port: 5432 }]
+```
+
+**4. API может ходить в БД** (раз egress у API тоже запрещён по умолчанию):
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: api-to-db, namespace: shop }
+spec:
+  podSelector: { matchLabels: { app: api } }
+  policyTypes: [Egress]
+  egress:
+  - to: [{ podSelector: { matchLabels: { app: postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+```
+Плюс политика, разрешающая Ingress-контроллеру доступ к API.
+
+**Частые ловушки:**
+- в `from` **два элемента списка** (`- namespaceSelector` и `- podSelector`) — это «ИЛИ»; **один элемент** с обоими селекторами — «И» (под с такой меткой в таком namespace). Перепутать — значит открыть доступ шире, чем задумано;
+- забыли DNS при запрете egress;
+- трафик от kubelet (пробы) к поду с узла обычно разрешён в зависимости от реализации CNI — проверять;
+- стандартный NetworkPolicy не умеет L7 (пути HTTP) и доменные имена в egress — это расширения CNI (`CiliumNetworkPolicy` с `toFQDNs`, Calico GlobalNetworkPolicy);
+- проверка: `kubectl exec` в под и `nc -zv`, визуализация политик (Cilium Hubble, редактор на networkpolicy.io).

@@ -169,3 +169,210 @@ tags: hardening, linux
 - регулярные **проверенные** бэкапы.
 
 **Автоматизация:** всё перечисленное оформить ролью Ansible или «золотым» образом (Packer), чтобы каждый сервер был защищён одинаково, а не настраивался вручную.
+
+## Q: Как устроен HashiCorp Vault? Что такое seal/unseal и auto-unseal?
+level: senior
+type: theory
+freq: 3
+tags: vault, секреты
+
+**Vault** — централизованное управление секретами: хранение, выдача временных учётных данных, шифрование как сервис, PKI, аудит. После перехода HashiCorp на лицензию BSL (2023) сообщество развивает открытый форк **OpenBao** (Linux Foundation) с совместимым API.
+
+**Основные компоненты:**
+- **Storage backend** — где хранятся зашифрованные данные. Рекомендуемый — **Integrated Storage (Raft)**: встроенное реплицируемое хранилище, кластер из 3 или 5 узлов, без внешнего Consul.
+- **Barrier** — всё, что пишется в хранилище, шифруется ключом шифрования. Хранилище само по себе не видит открытых данных.
+- **Secrets engines** — «плагины» секретов: KV, database, PKI, transit, AWS/GCP/Azure, SSH и др. Монтируются по путям (`secret/`, `database/`).
+- **Auth methods** — способы входа: Kubernetes, AppRole, OIDC/JWT, LDAP, облачные IAM, TLS-сертификаты. Результат входа — **токен** с политиками.
+- **Policies** — какие пути и операции разрешены.
+- **Audit devices** — журнал всех запросов (значения секретов хешируются).
+
+**Seal / unseal.** Ключ шифрования данных сам зашифрован **root key** (master key). При старте Vault находится в состоянии **sealed**: он не может расшифровать данные и не отвечает на запросы, пока не получит root key.
+- **Shamir's Secret Sharing** (по умолчанию): root key разделён на N частей (key shares), для распечатывания нужно любые K из них (например, 3 из 5), которые хранятся у разных людей. Безопасно, но после **каждого** рестарта узла нужны люди с ключами — плохо сочетается с автоматизацией и Kubernetes.
+- **Auto-unseal**: root key шифруется внешним **KMS** (AWS KMS, GCP KMS, Azure Key Vault, Yandex KMS, HSM или transit другого Vault). Узел распечатывается сам при старте. Ответственность за безопасность переносится на KMS и права доступа к нему.
+- При инициализации (`vault operator init`) выдаются ключи восстановления и **root token** — его используют для первичной настройки и затем **отзывают**.
+
+**Высокая доступность:** один активный узел обрабатывает запросы, остальные — standby (перенаправляют или проксируют запросы). Запуск в Kubernetes — официальный Helm-чарт, StatefulSet с Raft, anti-affinity по зонам. Межрегиональная репликация (performance и DR replication) — функции Enterprise-версии.
+
+**Эксплуатация:** снапшоты Raft (`vault operator raft snapshot save`) по расписанию и проверка восстановления, мониторинг (sealed-статус, лидер, латентность, истекающие лизы), аудит-логи в SIEM, процедура break-glass.
+
+## Q: Как работают политики, токены и аренды (leases) в Vault?
+level: senior
+type: practice
+freq: 2
+tags: vault, политики
+
+**Политика** (HCL) — разрешения на пути API:
+```hcl
+# policy: app-shop
+path "secret/data/shop/*" {
+  capabilities = ["read"]
+}
+path "database/creds/shop-readonly" {
+  capabilities = ["read"]
+}
+path "transit/encrypt/shop" {
+  capabilities = ["update"]
+}
+```
+Возможности (capabilities): `create`, `read`, `update`, `delete`, `list`, `sudo`, `deny`. По умолчанию всё запрещено, явный `deny` побеждает. Для KV v2 данные лежат по пути `secret/data/...`, а метаданные — `secret/metadata/...` (частая ошибка в политиках).
+
+**Привязка к аутентификации** — пример для Kubernetes:
+```bash
+vault auth enable kubernetes
+vault write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc
+vault write auth/kubernetes/role/shop \
+    bound_service_account_names=shop-api \
+    bound_service_account_namespaces=shop \
+    policies=app-shop ttl=1h
+```
+Под с ServiceAccount `shop-api` предъявляет свой токен ServiceAccount, Vault проверяет его через Kubernetes API (TokenReview) и выдаёт **Vault-токен** с политикой `app-shop`.
+
+Для CI — **JWT/OIDC auth**: GitLab CI и GitHub Actions выдают подписанный JWT джобы, Vault проверяет его и выдаёт токен с правами, привязанными к проекту, ветке или окружению. Статический токен в переменных CI не нужен.
+
+**Токены:**
+- имеют **TTL** и максимальный TTL, могут продлеваться (renew) до максимума;
+- **service tokens** (обычные) и **batch tokens** (лёгкие, без хранения, для массовых операций);
+- иерархия: при отзыве родительского токена отзываются дочерние.
+
+**Leases (аренды):** динамические секреты (учётные данные БД, облачные ключи) выдаются с **lease ID и TTL**. Приложение (или Vault Agent) должно **продлевать** аренду; по истечении Vault **сам удаляет** учётные данные в целевой системе. Отзыв: `vault lease revoke <id>`, массово по префиксу: `vault lease revoke -prefix database/creds/shop-readonly` — мгновенная реакция на компрометацию.
+
+**Типичные ошибки:** слишком широкие политики (`path "secret/*"`), долгоживущие токены с правом создавать токены, root token в эксплуатации, отсутствие аудита, приложение не умеет обновлять учётные данные после истечения аренды.
+
+## Q: Что такое динамические секреты в Vault? Как они работают для базы данных?
+level: senior
+type: practice
+freq: 2
+tags: vault, динамические-секреты, бд
+
+**Статический секрет** — пароль, который кто-то создал и положил в хранилище; живёт долго, известен многим, ротация болезненная.
+
+**Динамический секрет** — Vault создаёт **уникальные учётные данные по запросу** для каждого клиента с ограниченным временем жизни и сам их удаляет.
+
+**Database secrets engine:**
+```bash
+vault secrets enable database
+
+# Vault подключается к PostgreSQL под служебной учёткой с правом создавать роли
+vault write database/config/shop-db \
+    plugin_name=postgresql-database-plugin \
+    connection_url="postgresql://{{username}}:{{password}}@db.internal:5432/shop" \
+    username="vault_admin" password="..." \
+    allowed_roles="shop-readonly"
+
+vault write -force database/rotate-root/shop-db   # сменить пароль vault_admin, его больше никто не знает
+
+vault write database/roles/shop-readonly \
+    db_name=shop-db \
+    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; \
+                         GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
+    default_ttl=1h max_ttl=24h
+
+vault read database/creds/shop-readonly
+# username  v-k8s-shop-readonl-a1b2c3   password  ...   lease_duration 1h
+```
+
+**Преимущества:**
+- у каждого экземпляра приложения **свои** учётные данные → в логах БД видно, кто что делал;
+- утечка даёт доступ на ограниченное время, отзыв мгновенный;
+- нет общего пароля, который знают все и который страшно менять;
+- ротация происходит автоматически.
+
+**Сложности:**
+- приложение должно уметь **переподключаться** с новыми учётными данными (или это делает sidecar Vault Agent, перезаписывая файл, и приложение перечитывает его);
+- множество ролей в БД, нужна очистка; нагрузка на Vault при большом числе подов;
+- зависимость от доступности Vault: если он недоступен, новые поды не получат доступ к БД.
+
+Аналогичные движки: **AWS/GCP/Azure** (временные облачные ключи), **PKI** (короткоживущие сертификаты), **SSH** (подписанные сертификаты для входа), **Kubernetes** (токены ServiceAccount), RabbitMQ, MongoDB и др.
+
+## Q: Как доставлять секреты из Vault в поды Kubernetes? Сравните подходы.
+level: senior
+type: design
+freq: 3
+tags: vault, kubernetes, external-secrets
+
+| Подход | Как работает | Плюсы | Минусы |
+|---|---|---|---|
+| **Vault Agent Injector** | mutating webhook добавляет sidecar Vault Agent, который логинится в Vault и пишет секреты в файлы в общем volume (шаблоны), продлевает аренды | динамические секреты, автообновление файлов, приложение не знает о Vault | sidecar в каждом поде, конфигурация через аннотации |
+| **Secrets Store CSI Driver** + Vault provider | секреты монтируются как файлы через CSI-том при старте пода | без sidecar, можно не создавать Kubernetes Secret | обновление ограничено, динамические секреты и продление аренд хуже |
+| **External Secrets Operator (ESO)** | контроллер читает секреты из Vault (и из облачных хранилищ, Lockbox) и создаёт обычные **Kubernetes Secret**, синхронизирует периодически | стандартный Secret — работает с любыми приложениями и Helm-чартами, один инструмент для многих бэкендов, хорошо ложится в GitOps | секрет всё равно оказывается в etcd (нужно шифрование etcd и RBAC) |
+| **Vault Secrets Operator (VSO)** | официальный оператор HashiCorp: синхронизирует секреты Vault, включая динамические, в Kubernetes Secret, умеет перезапускать Deployment при изменении | нативная поддержка динамических секретов и ротации | только Vault |
+| **Прямая интеграция в приложении** | приложение само ходит в Vault через SDK | максимальная гибкость | код приложения зависит от Vault |
+
+**Как выбирать:**
+- нужна **единая схема для разных хранилищ** и GitOps (в Git хранится только `ExternalSecret` со ссылкой, без значений) → ESO;
+- нужны **динамические секреты** с продлением → Vault Agent Injector или VSO;
+- требование «секрет не должен попадать в etcd» → CSI или Agent Injector.
+
+**Общие правила:**
+- аутентификация подов через **Kubernetes auth** по ServiceAccount, отдельная роль Vault на каждое приложение;
+- шифрование etcd, RBAC на чтение Secret, `automountServiceAccountToken: false` для подов, которым не нужен доступ к API;
+- приложение должно **подхватывать изменения**: перечитывать файл или перезапускаться (Reloader, аннотации с хешем, rolloutRestartTargets в VSO);
+- предусмотреть поведение при недоступности Vault.
+
+## Q: Как автоматизировать выпуск TLS-сертификатов? Как работает cert-manager и ACME?
+level: middle
+type: practice
+freq: 3
+tags: tls, cert-manager, letsencrypt
+
+**ACME** — протокол автоматического выпуска сертификатов (Let's Encrypt, ZeroSSL, корпоративные CA с поддержкой ACME). Удостоверяющий центр проверяет, что вы контролируете домен, через **challenge**:
+- **HTTP-01**: CA запрашивает `http://домен/.well-known/acme-challenge/<токен>` — нужен доступ к порту 80 из интернета; не подходит для wildcard-сертификатов;
+- **DNS-01**: нужно создать TXT-запись `_acme-challenge.домен` — работает для **wildcard** (`*.example.com`) и внутренних сервисов, недоступных из интернета; требует API-доступа к DNS-провайдеру.
+
+Сертификаты Let's Encrypt живут **90 дней** (и срок сокращается дальше по решению индустрии), поэтому продление обязано быть автоматическим.
+
+**Без Kubernetes:** `certbot` или `acme.sh` по таймеру, с перезагрузкой nginx после обновления (`--deploy-hook "systemctl reload nginx"`). Caddy и Traefik умеют ACME встроенно.
+
+**cert-manager** в Kubernetes:
+- **Issuer / ClusterIssuer** — откуда брать сертификаты: ACME (Let's Encrypt), Vault PKI, собственный CA, self-signed;
+- **Certificate** — какой сертификат нужен (домены, срок, секрет для хранения); cert-manager выпускает его, кладёт в Secret типа `kubernetes.io/tls` и **продлевает заранее** (по умолчанию за треть срока до истечения);
+- для Ingress достаточно аннотации — Certificate создастся автоматически:
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata: { name: letsencrypt-prod }
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: devops@example.com
+    privateKeySecretRef: { name: letsencrypt-account }
+    solvers:
+    - http01: { ingress: { ingressClassName: nginx } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  annotations: { cert-manager.io/cluster-issuer: letsencrypt-prod }
+spec:
+  ingressClassName: nginx
+  tls: [{ hosts: [shop.example.com], secretName: shop-tls }]
+  rules: [...]
+```
+
+**Отладка:** `kubectl describe certificate`, затем `certificaterequest` → `order` → `challenge` (там видна причина: DNS не указывает на кластер, порт 80 закрыт, неверные права к DNS API). Для тестов — staging-сервер Let's Encrypt (у боевого жёсткие лимиты на количество выпусков).
+
+**Мониторинг сроков** сертификатов обязателен даже при автоматизации: метрика cert-manager `certmanager_certificate_expiration_timestamp_seconds`, blackbox exporter `probe_ssl_earliest_cert_expiry` — алерт за 14–21 день.
+
+## Q: Как организовать единый вход (SSO) для инфраструктурных сервисов? Что такое OIDC?
+level: middle
+type: theory
+freq: 2
+tags: sso, oidc, keycloak
+
+**SSO** (Single Sign-On) — один корпоративный аккаунт для всех систем: GitLab, Grafana, ArgoCD, Kubernetes, Vault, Jenkins, VPN. Плюсы: MFA в одном месте, мгновенное отключение уволенного сотрудника, управление доступом через группы, аудит.
+
+**Протоколы:**
+- **OIDC** (OpenID Connect) — надстройка над **OAuth 2.0** для аутентификации. Пользователь перенаправляется к **Identity Provider** (IdP), входит там, приложение получает **ID token** (JWT с информацией о пользователе и группах) и access token. Современный стандарт для веб-приложений и API.
+- **SAML 2.0** — старше, на XML, распространён в энтерпрайзе (корпоративные SaaS).
+- **LDAP** — не SSO, а каталог: приложение само проверяет логин и пароль в каталоге (Active Directory, FreeIPA). Многие системы поддерживают как запасной вариант.
+
+**Identity Provider:** **Keycloak** (open source, самый популярный self-hosted), Authentik, Dex (лёгкий OIDC-посредник, часто с ArgoCD и Kubernetes), облачные: Okta, Microsoft Entra ID, Google Workspace, Yandex ID для организаций. Источник пользователей — часто Active Directory / LDAP, с которым IdP синхронизируется (федерация).
+
+**Как это применяется:**
+- **Grafana, ArgoCD, GitLab, Vault, Harbor** — встроенная поддержка OIDC, роли по группам из IdP (`devops` → admin, `developers` → viewer);
+- **Kubernetes** — API-сервер проверяет OIDC-токены (`--oidc-issuer-url` или структурированная конфигурация аутентификации), `kubectl` получает токен через плагин `kubelogin`; права — RoleBinding на **группы** из IdP, а не на отдельных людей;
+- **сервисы без поддержки SSO** закрываются **oauth2-proxy** перед ними (например, через аннотации Ingress);
+- **машины и CI** — тоже через OIDC: токен джобы CI для доступа к облаку и Vault (workload identity federation).
+
+**Эксплуатация IdP:** это критичный сервис — если он недоступен, никто не может войти. Нужны HA, бэкапы, мониторинг и **break-glass** аккаунты для аварийного доступа к ключевым системам.

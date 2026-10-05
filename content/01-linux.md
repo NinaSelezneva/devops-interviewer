@@ -595,3 +595,164 @@ journalctl --vacuum-time=7d               # очистить старое
 Чтобы журнал сохранялся между перезагрузками, нужен каталог `/var/log/journal` (`Storage=persistent` в `journald.conf`). Размер ограничивается `SystemMaxUse=`.
 
 В контейнерах логи читают через `docker logs` / `kubectl logs`, в продакшене — из централизованной системы (ELK, Loki).
+
+## Q: Что такое /proc и /sys? Какую полезную информацию оттуда можно получить?
+level: middle
+type: theory
+freq: 2
+tags: procfs, sysfs
+
+Это **виртуальные файловые системы**: файлы не хранятся на диске, ядро генерирует их содержимое при чтении. Через них ядро показывает своё состояние, а часть параметров можно менять записью.
+
+**/proc** — процессы и состояние ядра:
+- `/proc/<PID>/` — всё о процессе: `cmdline` (аргументы, разделённые `\0`), `environ` (переменные окружения), `status` (состояние, память, потоки, UID), `limits` (ulimit), `fd/` (открытые файлы и сокеты), `cwd`, `exe`, `maps` / `smaps_rollup` (память), `io` (статистика ввода-вывода), `cgroup`, `ns/` (namespaces), `oom_score_adj`;
+- `/proc/cpuinfo`, `/proc/meminfo`, `/proc/loadavg`, `/proc/uptime`, `/proc/mounts`, `/proc/net/tcp`, `/proc/pressure/{cpu,io,memory}` (PSI);
+- `/proc/sys/` — **параметры ядра**, которыми управляет `sysctl`: `cat /proc/sys/net/ipv4/ip_forward` = `sysctl net.ipv4.ip_forward`.
+
+Утилиты `ps`, `top`, `free`, `ss`, `lsof` фактически читают `/proc`.
+
+**/sys** (sysfs) — устройства, драйверы и подсистемы ядра в виде дерева:
+- `/sys/class/net/eth0/` — параметры сетевого интерфейса (`speed`, `mtu`, `statistics/rx_errors`);
+- `/sys/block/sda/queue/scheduler` — планировщик ввода-вывода диска, `rotational` (SSD или HDD);
+- **`/sys/fs/cgroup/`** — иерархия cgroups: лимиты и потребление ресурсов контейнеров и systemd-сервисов (`memory.current`, `memory.max`, `cpu.stat` с полями throttling);
+- `/sys/kernel/mm/transparent_hugepage/enabled` — THP (часто отключают для БД и Redis).
+
+**Полезные приёмы:**
+```bash
+tr '\0' ' ' < /proc/1234/cmdline              # полная команда процесса
+tr '\0' '\n' < /proc/1234/environ | grep DB_   # переменные окружения процесса
+ls -l /proc/1234/fd | wc -l                    # число открытых дескрипторов
+cat /sys/fs/cgroup/system.slice/nginx.service/memory.current
+cat /proc/1234/status | grep -E 'State|VmRSS|Threads'
+```
+Внимание: через `/proc/<PID>/environ` видны секреты из переменных окружения — читать его может владелец процесса и root. Это одна из причин не передавать секреты через переменные окружения на общих хостах.
+
+## Q: Что такое swap? Нужно ли его отключать на серверах и в Kubernetes?
+level: middle
+type: theory
+freq: 2
+tags: swap, память
+
+**Swap** — область на диске (раздел или файл), куда ядро выгружает редко используемые страницы **анонимной памяти** (heap процессов), освобождая RAM. Страницы файлового кеша в swap не выгружаются: их можно просто сбросить и перечитать с диска.
+
+**Плюсы:** запас на пиковое потребление, выгрузка «холодной» памяти неактивных процессов, отсрочка OOM killer.
+**Минусы:** диск в тысячи раз медленнее памяти. При активном свопинге (**thrashing**) сервер почти перестаёт отвечать, но и не падает — это хуже явного отказа: health-check'и проходят, а латентность огромная.
+
+**Настройки:**
+- `vm.swappiness` (0–200, по умолчанию 60) — насколько охотно ядро выгружает анонимную память по сравнению со сбросом файлового кеша. Для серверов с БД часто ставят 1–10;
+- `free -m`, `swapon --show`, `vmstat 1` (столбцы `si`/`so` — чтение и запись в swap прямо сейчас: важна именно активность, а не занятый объём);
+- **zram** — сжатый swap в памяти, популярен на десктопах и небольших ВМ.
+
+**Kubernetes:** исторически kubelet **требовал отключить swap** (иначе не запускался): requests и limits памяти и вытеснение подов рассчитаны на отсутствие swap, а предсказуемость важнее. Сейчас поддержка swap стабилизирована (feature NodeSwap, режим `LimitedSwap` — использовать swap могут только поды класса Burstable в пределах рассчитанной доли), но включают её осознанно, по умолчанию многие кластеры по-прежнему работают без swap.
+
+**Базы данных и кеши** (PostgreSQL, Redis, Elasticsearch, Kafka) обычно настраивают так, чтобы они не уходили в swap: минимальный swappiness, `bootstrap.memory_lock` в Elasticsearch, корректные лимиты памяти.
+
+**Рекомендация на собеседовании:** «Зависит от нагрузки. На серверах приложений небольшой swap с низким swappiness даёт запас и время на реакцию, но мониторю активность свопинга (`si/so`, PSI memory) и алерчу на неё. В Kubernetes по умолчанию без swap, если нет отдельной причины включать».
+
+## Q: Как настроить параметры ядра через sysctl для высоконагруженного сервера?
+level: senior
+type: practice
+freq: 2
+tags: sysctl, производительность
+
+**sysctl** — чтение и изменение параметров ядра (`/proc/sys/`):
+```bash
+sysctl net.core.somaxconn                      # прочитать
+sysctl -w net.core.somaxconn=65535             # изменить до перезагрузки
+echo 'net.core.somaxconn = 65535' > /etc/sysctl.d/90-tuning.conf   # постоянно
+sysctl --system                                # применить все файлы
+```
+
+**Часто настраиваемые параметры:**
+| Параметр | Зачем |
+|---|---|
+| `net.core.somaxconn` | максимальная очередь принятых соединений (`listen` backlog); приложение тоже должно запросить большой backlog |
+| `net.ipv4.tcp_max_syn_backlog` | очередь полуоткрытых соединений (SYN) |
+| `net.ipv4.ip_local_port_range = 1024 65535` | больше эфемерных портов для исходящих соединений (прокси, клиенты БД) |
+| `net.ipv4.tcp_tw_reuse = 1` | переиспользование сокетов в TIME_WAIT для исходящих соединений |
+| `net.ipv4.tcp_fin_timeout` | сколько держать FIN_WAIT_2 |
+| `net.core.netdev_max_backlog` | очередь входящих пакетов при высоком PPS |
+| `net.core.rmem_max`, `wmem_max`, `net.ipv4.tcp_rmem`, `tcp_wmem` | буферы сокетов для быстрых каналов с большой задержкой |
+| `net.netfilter.nf_conntrack_max` | размер таблицы conntrack (ошибка `table full, dropping packet`) |
+| `fs.file-max`, `fs.nr_open` | системный лимит файловых дескрипторов |
+| `fs.inotify.max_user_watches`, `max_user_instances` | много наблюдателей за файлами (IDE, сборщики логов, kubelet) |
+| `vm.swappiness` | склонность к свопингу |
+| `vm.max_map_count` | число областей памяти процесса — Elasticsearch и OpenSearch требуют `262144` |
+| `vm.dirty_ratio`, `vm.dirty_background_ratio` | когда сбрасывать «грязные» страницы на диск |
+| `net.ipv4.ip_forward = 1` | маршрутизация пакетов (нужна для Kubernetes-нод, VPN, NAT) |
+
+**Принципы:**
+- **Не копировать «магические» конфиги из интернета** — менять параметр, когда есть **симптом** и метрика: переполнение очереди (`nstat -az | grep -i listen`, `ss -lnt` — Recv-Q у слушающего сокета), дропы, ошибка conntrack, исчерпание портов.
+- Опасный параметр — `net.ipv4.tcp_tw_recycle`: ломал соединения клиентов за NAT и **удалён из ядра** в версии 4.12.
+- Менять через управление конфигурацией (Ansible), а не вручную; задокументировать причину.
+- **В контейнерах** часть параметров — свои для каждого сетевого namespace (`net.*`). В Kubernetes их задают через `securityContext.sysctls` пода: безопасные разрешены по умолчанию, остальные — только если разрешены в kubelet (`--allowed-unsafe-sysctls`). Параметры `vm.*` и `fs.*` общие для всего узла.
+
+## Q: Как работают пакетные менеджеры? Как зафиксировать версию пакета и подключить свой репозиторий?
+level: middle
+type: practice
+freq: 2
+tags: apt, dnf, пакеты
+
+**Семейства:**
+- **Debian / Ubuntu**: пакеты `.deb`, низкоуровневый `dpkg`, высокоуровневый **`apt`**; репозитории в `/etc/apt/sources.list` и `/etc/apt/sources.list.d/` (новый формат `.sources` — deb822);
+- **RHEL / CentOS Stream / Rocky / AlmaLinux / Fedora**: `.rpm`, `rpm`, **`dnf`** (раньше `yum`); репозитории в `/etc/yum.repos.d/*.repo`;
+- **Alpine**: `apk`; **openSUSE**: `zypper`.
+
+**Типовые операции:**
+```bash
+apt update && apt install -y nginx            # dnf install -y nginx
+apt list --installed | grep nginx             # rpm -qa | grep nginx
+apt-cache policy nginx                        # доступные версии и откуда; dnf list --showduplicates nginx
+apt install nginx=1.24.0-2ubuntu7             # dnf install nginx-1.24.0
+dpkg -L nginx                                 # файлы пакета; rpm -ql nginx
+dpkg -S /usr/sbin/nginx                       # какому пакету принадлежит файл; rpm -qf
+apt-mark hold nginx                           # запретить обновление; dnf versionlock add nginx
+apt autoremove                                # удалить ненужные зависимости
+```
+
+**Свой или сторонний репозиторий** (на примере Debian/Ubuntu):
+```bash
+curl -fsSL https://repo.example.com/key.gpg | gpg --dearmor -o /etc/apt/keyrings/example.gpg
+echo "deb [signed-by=/etc/apt/keyrings/example.gpg] https://repo.example.com/apt stable main" \
+  > /etc/apt/sources.list.d/example.list
+apt update
+```
+Ключ привязывается к конкретному репозиторию через `signed-by`, а не добавляется в общий список доверенных (`apt-key` устарел).
+
+**Практика DevOps:**
+- **зеркала и прокси-репозитории** (Nexus, Artifactory, Aptly, Pulp) — стабильность сборок, работа в закрытом контуре, контроль того, что ставится на серверы;
+- **фиксация версий** критичных пакетов (БД, Kubernetes-компоненты `kubelet`/`kubeadm` — обновлять их нужно осознанно, а не случайно при `apt upgrade`);
+- **автоматические обновления безопасности** (`unattended-upgrades`, `dnf-automatic`) для базовой системы;
+- в Dockerfile — фиксировать версии пакетов там, где важна воспроизводимость, и чистить кеши в том же слое;
+- собственные пакеты (deb/rpm) для внутренних утилит собирают в CI (fpm, nfpm).
+
+## Q: Что такое SELinux и AppArmor? Почему их не стоит просто отключать?
+level: middle
+type: theory
+freq: 2
+tags: selinux, apparmor, безопасность
+
+Обычные права Linux (**DAC** — discretionary access control) основаны на владельце файла: процесс, работающий от root или от владельца, может делать с файлом что угодно. **MAC** (mandatory access control) добавляет **обязательную политику**, которую процесс не может обойти даже от root: «процессу nginx можно читать только `/var/www` и слушать 80/443».
+
+Если веб-сервер взломан, MAC ограничивает, куда злоумышленник может добраться.
+
+**SELinux** (RHEL, Fedora, Rocky, Android):
+- каждому процессу и файлу присвоен **контекст** (метка): `system_u:object_r:httpd_sys_content_t:s0`;
+- политика описывает, какие типы процессов к каким типам объектов имеют доступ;
+- режимы: `enforcing` (запрещает), `permissive` (только логирует), `disabled`;
+- команды: `getenforce`, `ls -Z`, `ps -eZ`, `restorecon -Rv /var/www` (восстановить правильные метки), `semanage fcontext -a -t httpd_sys_content_t '/data/www(/.*)?'`, `setsebool -P httpd_can_network_connect on` (разрешить nginx ходить к апстримам), `semanage port -a -t http_port_t -p tcp 8081`;
+- диагностика: `ausearch -m avc -ts recent`, `audit2why`, `sealert`.
+
+**AppArmor** (Ubuntu, Debian, SUSE):
+- **профили по путям** к исполняемым файлам: какие файлы, возможности (capabilities) и сеть разрешены программе;
+- режимы `enforce` и `complain`; `aa-status`, `aa-complain`, `aa-enforce`, логи в `dmesg` / journal;
+- проще в освоении, чем SELinux.
+
+**Типичная ситуация:** «положил сайт в `/data/www`, nginx отдаёт 403, права на файлы правильные» → у файлов неправильный SELinux-контекст. Решение — `semanage fcontext` + `restorecon`, а не `setenforce 0`.
+
+**Почему не отключать:**
+- это важный слой защиты от эксплуатации уязвимостей и побега из контейнера (контейнерные рантаймы используют SELinux и AppArmor-профили для изоляции контейнеров);
+- требования стандартов безопасности (CIS, PCI DSS, ФСТЭК);
+- правильный путь — перевести в `permissive`, собрать отказы, донастроить политику и вернуть `enforcing`.
+
+**В Kubernetes:** `securityContext.seLinuxOptions`, `appArmorProfile` (поле в securityContext с версии 1.30), seccomp-профили — дополняющие механизмы.

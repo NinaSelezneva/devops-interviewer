@@ -309,3 +309,100 @@ tags: миграция, российские-облака
 - обучение команды: другие консоли, CLI, IAM-модель, процедуры поддержки.
 
 **5. После миграции:** нагрузочное тестирование, учения по отказу зоны, сверка стоимости, удаление ресурсов в старом облаке (чтобы не платить за забытое), обновление документации и runbook'ов.
+
+## Q: Как устроен Google Cloud: иерархия ресурсов, IAM, сеть?
+level: middle
+type: theory
+freq: 2
+tags: gcp
+
+**Иерархия ресурсов:**
+- **Organization** (привязана к домену Google Workspace или Cloud Identity) → **Folders** (подразделения, окружения) → **Projects** → ресурсы.
+- **Проект** — основная единица: биллинг, квоты, API, IAM. Принято разделять проекты по окружениям и командам.
+- **Organization Policies** — ограничения на всю организацию или папку: разрешённые регионы, запрет внешних IP, запрет создания ключей сервисных аккаунтов.
+
+**IAM:**
+- субъекты (principals): пользователи Google, группы, **сервисные аккаунты**, домены, федеративные идентичности;
+- роли: **basic** (Owner, Editor, Viewer — слишком широкие, в проде избегать), **predefined** (`roles/storage.objectViewer`, `roles/container.developer`), **custom**;
+- роли назначаются на организацию, папку, проект или ресурс и **наследуются вниз**;
+- **ключи сервисных аккаунтов** (JSON-файлы) — главный источник утечек; вместо них — привязка сервисного аккаунта к ВМ и Cloud Run, **Workload Identity Federation for GKE** (поды получают права через Kubernetes ServiceAccount) и **Workload Identity Federation** для CI и других облаков (GitHub Actions, GitLab → GCP без ключей);
+- IAM Conditions — условия по времени, ресурсам, тегам.
+
+**Сеть — главное отличие от AWS:**
+- **VPC глобальная**: одна сеть охватывает все регионы, а **подсети региональные**. Виртуальные машины в разных регионах общаются по внутренним IP без peering;
+- правила файрвола на уровне VPC с применением по **network tags** или сервисным аккаунтам (а не security groups на интерфейсе); новые возможности — иерархические и сетевые политики файрвола;
+- **Shared VPC** — одна сеть в host-проекте, которой пользуются service-проекты разных команд (централизованное управление сетью);
+- **Cloud NAT**, **Private Google Access** (доступ к API Google без внешних IP), Private Service Connect;
+- **глобальный балансировщик HTTP(S)** с одним anycast-IP для всего мира.
+
+**Основные сервисы:** Compute Engine (ВМ, Managed Instance Groups), **GKE** (Standard и **Autopilot** — Google управляет нодами, оплата за поды), **Cloud Run** (serverless-контейнеры), Cloud Functions, Cloud Storage, Cloud SQL, AlloyDB, Spanner, Memorystore, **BigQuery**, Pub/Sub, Artifact Registry, Secret Manager, Cloud KMS, Cloud Logging и Cloud Monitoring, Cloud Build, Cloud DNS, Cloud Armor (WAF).
+
+**Инструменты:** `gcloud` CLI, Terraform-провайдер `hashicorp/google`, Config Connector (ресурсы GCP как объекты Kubernetes).
+
+## Q: Как устроен Microsoft Azure: иерархия, Entra ID и RBAC, managed identities, сеть?
+level: middle
+type: theory
+freq: 2
+tags: azure
+
+**Иерархия:**
+- **Microsoft Entra ID** (бывший Azure Active Directory) **tenant** — каталог пользователей и приложений организации;
+- **Management groups** — группировка подписок для общих политик и прав;
+- **Subscriptions** — граница биллинга, квот и доступа (часто отдельные подписки для prod и non-prod);
+- **Resource groups** — логический контейнер ресурсов с общим жизненным циклом (удаление группы удаляет всё в ней);
+- ресурсы.
+
+**Доступ:**
+- **Entra ID** отвечает за идентичность (пользователи, группы, **service principals** приложений, условный доступ, MFA);
+- **Azure RBAC** — назначение ролей (Owner, Contributor, Reader, специализированные: `AcrPull`, `Key Vault Secrets User`) на **scope**: management group, подписка, группа ресурсов, ресурс; права наследуются вниз;
+- **Managed identities** — идентичность ресурса Azure (ВМ, App Service, Functions, AKS) без секретов: **system-assigned** (живёт и удаляется вместе с ресурсом) и **user-assigned** (отдельный ресурс, можно назначить нескольким). Аналог IAM-ролей для EC2;
+- **Workload identity** для AKS (поды получают токен Entra ID по Kubernetes ServiceAccount) и **federated credentials** для CI (GitHub Actions, Azure DevOps) без секретов;
+- **Azure Policy** — правила соответствия (разрешённые регионы, обязательные теги, запрет публичных IP) с аудитом и автоматическим исправлением.
+
+**Сеть:**
+- **VNet** (региональная) с подсетями, **NSG** (network security group — stateful правила на подсеть или интерфейс), **ASG** (группировка ВМ для правил NSG);
+- **VNet peering**, hub-and-spoke с **Azure Firewall** или Virtual WAN, VPN Gateway, ExpressRoute;
+- **Private Endpoint / Private Link** — доступ к PaaS-сервисам (Storage, SQL, Key Vault) по приватному IP в вашей VNet;
+- балансировка: **Load Balancer** (L4), **Application Gateway** (L7 + WAF, региональный), **Front Door** (глобальный L7 + CDN).
+
+**Основные сервисы:** Virtual Machines и VM Scale Sets, **AKS**, App Service, Azure Functions, Container Apps, Blob Storage, Azure SQL, Azure Database for PostgreSQL, Cosmos DB, Service Bus, Event Hubs (совместим с протоколом Kafka), Key Vault, Azure Container Registry, Azure Monitor и Log Analytics, Microsoft Defender for Cloud.
+
+**IaC и CI/CD:** ARM-шаблоны, **Bicep** (более удобный язык поверх ARM), Terraform-провайдер `azurerm`, **Azure DevOps** (Boards, Repos, Pipelines, Artifacts), GitHub Actions.
+
+## Q: Сравните AWS, GCP и Azure. Как бы вы выбирали облако для нового проекта?
+level: senior
+type: design
+freq: 2
+tags: облака, сравнение
+
+**Соответствие основных сервисов:**
+| Задача | AWS | GCP | Azure |
+|---|---|---|---|
+| ВМ и автомасштабирование | EC2, ASG | Compute Engine, MIG | VMs, VM Scale Sets |
+| Kubernetes | EKS | GKE (Standard, Autopilot) | AKS |
+| Serverless-контейнеры | ECS Fargate, App Runner | Cloud Run | Container Apps |
+| Функции | Lambda | Cloud Run functions | Azure Functions |
+| Объектное хранилище | S3 | Cloud Storage | Blob Storage |
+| Реляционные БД | RDS, Aurora | Cloud SQL, AlloyDB, Spanner | Azure SQL, Database for PostgreSQL |
+| Очереди и события | SQS, SNS, EventBridge, MSK | Pub/Sub | Service Bus, Event Grid, Event Hubs |
+| Секреты и ключи | Secrets Manager, KMS | Secret Manager, Cloud KMS | Key Vault |
+| Идентичность | IAM, IAM Identity Center | Cloud IAM, Cloud Identity | Entra ID, Azure RBAC |
+| Сеть | VPC (региональная) | VPC (глобальная) | VNet (региональная) |
+| Мониторинг | CloudWatch, X-Ray | Cloud Monitoring, Logging, Trace | Azure Monitor, Application Insights |
+| IaC (нативный) | CloudFormation, CDK | Infrastructure Manager | ARM, Bicep |
+| Аналитика | Redshift, Athena | BigQuery | Synapse, Fabric |
+
+**Сильные стороны (обобщённо):**
+- **AWS** — самый широкий набор сервисов, зрелость, крупнейшая экосистема и рынок специалистов;
+- **GCP** — сильный Kubernetes (GKE), данные и аналитика (BigQuery), глобальная сеть, удобные Cloud Run и Autopilot;
+- **Azure** — интеграция с экосистемой Microsoft (Entra ID, Office 365, Windows, .NET, SQL Server), популярен в энтерпрайзе, гибридные сценарии.
+
+**Критерии выбора:**
+1. **Требования к данным и законодательство**: где должны храниться данные (для российских персональных данных — российские облака или собственный ЦОД).
+2. **Существующие компетенции команды** и экосистема компании (уже есть Microsoft 365 и Entra ID → Azure проще интегрировать).
+3. **Нужные managed-сервисы** и их зрелость для вашего стека.
+4. **Стоимость**: не прайс-лист, а расчёт для своей нагрузки, включая трафик, поддержку и скидки за обязательства (Savings Plans, CUD, Reservations).
+5. **География**: регионы рядом с пользователями.
+6. **Партнёрские условия**, кредиты для стартапов, поддержка.
+
+**Multi-cloud:** звучит как защита от зависимости, но удваивает сложность (разные IAM, сети, сервисы, экспертиза). Оправдан при конкретных причинах: регуляторика, слияние компаний, использование уникального сервиса другого облака. Чаще разумнее одно основное облако + **переносимость** там, где это недорого (Kubernetes, Terraform, open-source БД и мониторинг).
