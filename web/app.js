@@ -150,7 +150,7 @@
     const c = counts(ALL);
     const history = store.history.slice(-5).reverse();
     app.innerHTML = `
-      <h1>Подготовка к собеседованию Senior DevOps</h1>
+      <h1>Подготовка к собеседованию DevOps-инженера</h1>
       <p class="lead">${ALL.length} ${plural(ALL.length, 'вопрос', 'вопроса', 'вопросов')} по ${TOPICS.length} темам с подробными ответами и теорией.
         Отвечайте вслух или письменно, затем сверяйтесь с эталоном и честно оценивайте себя — интервальное повторение вернёт слабые вопросы.</p>
       <div class="stats">
