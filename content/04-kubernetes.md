@@ -1033,3 +1033,51 @@ spec:
 - трафик от kubelet (пробы) к поду с узла обычно разрешён в зависимости от реализации CNI — проверять;
 - стандартный NetworkPolicy не умеет L7 (пути HTTP) и доменные имена в egress — это расширения CNI (`CiliumNetworkPolicy` с `toFQDNs`, Calico GlobalNetworkPolicy);
 - проверка: `kubectl exec` в под и `nc -zv`, визуализация политик (Cilium Hubble, редактор на networkpolicy.io).
+
+## Q: Какие нюансы есть у Job и CronJob в Kubernetes?
+level: middle
+type: practice
+freq: 2
+tags: job, cronjob
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: nightly-report }
+spec:
+  schedule: "0 3 * * *"
+  timeZone: "Europe/Moscow"          # иначе время по часовому поясу kube-controller-manager
+  concurrencyPolicy: Forbid          # не запускать новый, пока работает предыдущий
+  startingDeadlineSeconds: 600       # если пропустили запуск больше чем на 10 мин — не запускать
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 3                # повторов при ошибке
+      activeDeadlineSeconds: 3600    # жёсткий лимит времени выполнения
+      ttlSecondsAfterFinished: 86400 # удалить Job и поды через сутки
+      template:
+        spec:
+          restartPolicy: Never       # для Job — Never или OnFailure (Always запрещён)
+          containers:
+          - name: report
+            image: registry.example.com/report:1.2.0
+            resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 512Mi } }
+```
+
+**Job:**
+- `completions` и `parallelism` — сколько успешных выполнений нужно и сколько подов одновременно; **Indexed Job** (`completionMode: Indexed`) — каждый под получает свой индекс для обработки своей части данных;
+- **`restartPolicy: OnFailure`** — перезапускается контейнер в том же поде (логи предыдущих попыток теряются), **`Never`** — каждая попытка в новом поде (логи сохраняются, но поды накапливаются);
+- `backoffLimit` (по умолчанию 6) с экспоненциальной задержкой между попытками; **`podFailurePolicy`** — не повторять при определённых кодах выхода (ошибка в данных) или игнорировать выселение пода;
+- без `ttlSecondsAfterFinished` завершённые Job и поды остаются навсегда и засоряют кластер.
+
+**CronJob:**
+- **`concurrencyPolicy`**: `Allow` (по умолчанию — запуски могут накладываться), `Forbid`, `Replace` (убить текущий и запустить новый);
+- контроллер **не гарантирует** ровно один запуск: в редких случаях задача может запуститься дважды или ни разу — задачи должны быть **идемпотентными**;
+- если контроллер пропустил больше 100 запусков (например, CronJob был приостановлен `suspend: true` или кластер был недоступен), он перестанет планировать задачу — `startingDeadlineSeconds` ограничивает окно подсчёта пропусков;
+- часовой пояс — поле `timeZone`.
+
+**Типичные проблемы:**
+- **sidecar** (Istio, агент логов) не завершается → Job никогда не становится Completed; решение — native sidecars (`initContainers` с `restartPolicy: Always`);
+- Job не помещается на ноды (requests) и висит в Pending — следить за метрикой `kube_job_status_failed` и возрастом незавершённых Job;
+- **мониторинг «тихих» отказов**: CronJob, который не запускается вообще, сам ошибок не создаёт. Нужен алерт на время **последнего успешного** выполнения (`kube_cronjob_status_last_successful_time` из kube-state-metrics) или heartbeat во внешний сервис (Healthchecks) в конце задачи.

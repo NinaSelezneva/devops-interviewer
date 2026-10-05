@@ -213,3 +213,81 @@ __pycache__/
 - Локальные правила только для себя — `.git/info/exclude`, глобальные — `core.excludesFile`.
 - Проверить, какое правило сработало: `git check-ignore -v file`.
 - Шаблоны для языков: github.com/github/gitignore.
+
+## Q: Что такое Git hooks и pre-commit? Как использовать их в команде?
+level: middle
+type: practice
+freq: 2
+tags: hooks, pre-commit
+
+**Git hooks** — скрипты, которые Git запускает при событиях. Лежат в `.git/hooks/` (не версионируются вместе с репозиторием) или в каталоге из `core.hooksPath`.
+
+**Клиентские хуки:**
+- `pre-commit` — перед созданием коммита: линтеры, форматирование, поиск секретов. Ненулевой код возврата отменяет коммит;
+- `commit-msg` — проверка сообщения коммита (Conventional Commits, номер задачи);
+- `pre-push` — перед отправкой: быстрые тесты.
+
+**Серверные хуки** (`pre-receive`, `update`, `post-receive`) работают на сервере Git — в GitLab и GitHub их заменяют **push rules**, защищённые ветки, проверки в CI и правила вроде запрета секретов при push (push protection).
+
+**Фреймворк pre-commit** — стандарт для управления хуками в команде:
+```yaml
+# .pre-commit-config.yaml (хранится в репозитории)
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_tflint
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+```
+`pre-commit install` — подключить хуки локально, `pre-commit run --all-files` — проверить весь репозиторий, `pre-commit autoupdate` — обновить версии.
+
+**Важно:** локальные хуки **легко обойти** (`git commit --no-verify`, не установлены у нового сотрудника). Поэтому они — **быстрая обратная связь** для разработчика, а **обязательные проверки** дублируются в CI (`pre-commit run --all-files` в пайплайне) и в правилах сервера. Хуки должны быть быстрыми (секунды), иначе их начнут отключать.
+
+## Q: Чем git submodule отличается от subtree? Как подключать общий код в несколько репозиториев?
+level: middle
+type: theory
+freq: 1
+tags: submodule, subtree
+
+**Задача:** общие Terraform-модули, Ansible-роли, CI-шаблоны или библиотеки нужны в нескольких репозиториях.
+
+**git submodule** — в репозитории хранится **ссылка** на конкретный коммит другого репозитория:
+```bash
+git submodule add https://gitlab.example.com/infra/modules.git modules
+git clone --recurse-submodules <repo>          # иначе каталог будет пустым
+git submodule update --init --recursive
+cd modules && git checkout v2.3.0 && cd .. && git add modules && git commit -m "bump modules"
+```
+- плюсы: явная фиксация версии, код не дублируется, история раздельная;
+- минусы: постоянная путаница (забыли `--recurse-submodules`, «detached HEAD» внутри подмодуля, забыли закоммитить обновление ссылки), неудобно вносить изменения в подмодуль, CI нужно настраивать на получение подмодулей и доступ к ним.
+
+**git subtree** — код другого репозитория **копируется** в подкаталог вместе с историей (или сжатой историей):
+```bash
+git subtree add --prefix=modules https://gitlab.example.com/infra/modules.git v2.3.0 --squash
+git subtree pull --prefix=modules https://gitlab.example.com/infra/modules.git v2.4.0 --squash
+```
+- плюсы: для пользователей репозитория это обычные файлы — ничего дополнительно делать не нужно;
+- минусы: код дублируется, обновление и отправка изменений обратно — специальными командами, легко разойтись с оригиналом.
+
+**Часто лучше обойтись без обоих** — использовать механизмы распространения, предусмотренные инструментами:
+- **Terraform**: модули с `source = "git::https://...//vpc?ref=v2.3.0"` или приватный registry;
+- **Ansible**: коллекции и роли через `requirements.yml`;
+- **CI**: `include: project:` / CI/CD Components в GitLab, reusable workflows в GitHub Actions;
+- **Helm**: чарты-зависимости из OCI-реестра;
+- **код приложений**: пакеты в репозитории артефактов (npm, PyPI, Maven, Go modules).
+Альтернатива в другую сторону — **монорепозиторий**, где общий код просто лежит рядом.

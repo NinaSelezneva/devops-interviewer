@@ -675,3 +675,217 @@ with ThreadPoolExecutor(max_workers=20) as pool:
 - **фиксация версий**: `requirements.txt` с точными версиями (`pip freeze`, `pip-tools` → `requirements.lock`), `pyproject.toml` + lock-файл (**uv**, Poetry);
 - **uv** — быстрый современный менеджер пакетов и окружений; **pipx** — для установки CLI-утилит (ansible, awscli) в изолированные окружения;
 - в контейнерах venv не обязателен, но версии фиксируются так же.
+
+## Q: Как обрабатывать JSON в командной строке с помощью jq? Решите типовые задачи.
+level: middle
+type: practice
+freq: 2
+tags: jq, json
+
+**jq** — «sed и awk для JSON». Незаменим для работы с API, `kubectl -o json`, `aws ... --output json`, `terraform show -json`.
+
+```bash
+# красивый вывод и выбор поля
+curl -s https://api.example.com/status | jq .
+jq '.items[0].metadata.name' pods.json
+
+# сырой вывод строк без кавычек (-r) — для использования в скриптах
+kubectl get pods -o json | jq -r '.items[].metadata.name'
+
+# фильтрация: поды не в состоянии Running
+kubectl get pods -A -o json | jq -r '.items[]
+  | select(.status.phase != "Running")
+  | "\(.metadata.namespace)/\(.metadata.name) \(.status.phase)"'
+
+# поды с количеством рестартов больше 5
+kubectl get pods -A -o json | jq -r '.items[]
+  | {ns: .metadata.namespace, name: .metadata.name,
+     restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)}
+  | select(.restarts > 5) | "\(.ns)/\(.name) \(.restarts)"'
+
+# образы всех контейнеров кластера без повторов
+kubectl get pods -A -o json | jq -r '[.items[].spec.containers[].image] | unique[]'
+
+# группировка и подсчёт: сколько инстансов каждого типа
+aws ec2 describe-instances | jq -r '[.Reservations[].Instances[].InstanceType]
+  | group_by(.) | map("\(.[0]) \(length)")[]'
+
+# изменение JSON: поменять значение и записать обратно
+jq '.replicas = 3 | .image.tag = "1.5.0"' values.json > tmp && mv tmp values.json
+
+# передача переменных из shell безопасно (без подстановки в строку фильтра)
+jq --arg env "$ENV" '.environment = $env' config.json
+
+# ресурсы, которые Terraform собирается удалить
+terraform show -json tfplan | jq -r '.resource_changes[]
+  | select(.change.actions | index("delete")) | .address'
+
+# JSON → CSV
+jq -r '.users[] | [.id, .email, .role] | @csv' users.json
+```
+
+**Полезное:** `?` — не падать на отсутствующих полях (`.status.containerStatuses[]?`), `//` — значение по умолчанию, `keys`, `length`, `to_entries` / `from_entries`, `map`, `select`, `sort_by`, `group_by`, `unique_by`, `@base64d` (декодировать секрет Kubernetes: `kubectl get secret x -o json | jq -r '.data.password | @base64d'`).
+
+Для YAML — **yq** (с синтаксисом, похожим на jq): `yq '.spec.replicas = 5' -i deploy.yaml`. Для простых случаев в `kubectl` есть `-o jsonpath` и `-o custom-columns`.
+
+## Q: Зачем DevOps-инженеру Makefile? Как его использовать в проекте?
+level: middle
+type: practice
+freq: 1
+tags: make, автоматизация
+
+**Makefile** — простой способ собрать типовые команды проекта в одном месте с единым интерфейсом: `make test`, `make build`, `make deploy ENV=stage`. Новый человек в проекте видит все действия сразу, а CI вызывает те же команды, что и разработчик локально — «работает у меня, но не в CI» случается реже.
+
+```makefile
+SHELL := /bin/bash
+.SHELLFLAGS := -euo pipefail -c
+.DEFAULT_GOAL := help
+
+IMAGE ?= registry.example.com/shop/api
+TAG   ?= $(shell git rev-parse --short HEAD)
+ENV   ?= dev
+
+.PHONY: help lint test build push deploy tf-plan
+
+help: ## Показать список команд
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  %-12s %s\n", $$1, $$2}'
+
+lint: ## Линтеры
+	ruff check . && hadolint Dockerfile && helm lint chart/
+
+test: lint ## Тесты (сначала линтеры)
+	pytest -q
+
+build: ## Собрать образ
+	docker build -t $(IMAGE):$(TAG) .
+
+push: build ## Опубликовать образ
+	docker push $(IMAGE):$(TAG)
+
+deploy: ## Задеплоить: make deploy ENV=stage
+	helm upgrade --install api chart/ -n $(ENV) -f chart/values-$(ENV).yaml --set image.tag=$(TAG) --atomic
+
+tf-plan: ## terraform plan для окружения
+	cd terraform/envs/$(ENV) && terraform init -input=false && terraform plan -out=tfplan
+```
+
+**Особенности, о которых спрашивают:**
+- **отступы — только табуляция** (частая ошибка `missing separator`);
+- **`.PHONY`** — цели, которые не являются файлами; иначе, если в каталоге появится файл `test`, `make test` решит, что всё уже «собрано»;
+- каждая строка рецепта выполняется в **отдельном shell** (`cd` не сохраняется между строками — объединять через `&&` или использовать `.ONESHELL`);
+- `$$` — экранирование `$` для shell; `?=` — значение по умолчанию, переопределяемое из командной строки или окружения;
+- зависимости целей (`push: build`) и инкрементальная сборка по времени изменения файлов — изначальное назначение make.
+
+**Альтернативы:** `just` (простой синтаксис, без особенностей make), `Taskfile` (go-task, YAML), скрипты в `scripts/`, npm scripts. Главное — единая точка входа для типовых операций, а не конкретный инструмент.
+
+## Q: Напишите простой HTTP-сервис на Go с health-check и метриками Prometheus.
+level: senior
+type: practice
+freq: 1
+tags: go, live-coding, prometheus
+
+Нужен минимальный сервис: эндпоинт `/hello`, `/healthz` для проб Kubernetes, `/metrics` со счётчиком запросов и гистограммой длительности, корректное завершение по SIGTERM.
+
+???
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	requests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total", Help: "HTTP requests",
+	}, []string{"path", "code"})
+	duration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "http_request_duration_seconds", Help: "Request latency",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"path"})
+)
+
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (r *statusRecorder) WriteHeader(code int) { r.code = code; r.ResponseWriter.WriteHeader(code) }
+
+// instrument — middleware: считает запросы и время ответа (RED-метрики)
+func instrument(path string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		h(rec, r)
+		duration.WithLabelValues(path).Observe(time.Since(start).Seconds())
+		requests.WithLabelValues(path, strconv.Itoa(rec.code)).Inc()
+	}
+}
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))   // структурированные логи в stdout
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /hello", instrument("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello\n"))
+	}))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	addr := ":" + getenv("PORT", "8080")
+	srv := &http.Server{
+		Addr: addr, Handler: mux,
+		ReadHeaderTimeout: 5 * time.Second,   // защита от медленных клиентов (Slowloris)
+		ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	go func() {
+		logger.Info("listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server failed", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()                                  // ждём SIGTERM от Kubernetes
+	logger.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {   // дорабатываем текущие запросы
+		logger.Error("graceful shutdown failed", "err", err)
+	}
+}
+
+func getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+```
+Dockerfile для такого сервиса — multi-stage: `golang:1.23` для сборки с `CGO_ENABLED=0`, финальный образ `gcr.io/distroless/static:nonroot`.
+
+**Что показывает решение:**
+- **graceful shutdown** по SIGTERM: `srv.Shutdown` перестаёт принимать новые соединения и дожидается текущих запросов — без этого при каждом деплое часть запросов обрывается;
+- **таймауты сервера** (по умолчанию в Go их нет);
+- конфигурация через переменные окружения (12-factor), логи в stdout в JSON;
+- метрики RED через middleware, низкая кардинальность меток (путь-шаблон, а не URL с ID);
+- маршрутизация с методами в стандартной библиотеке (Go 1.22+).
+
+**Что спросят дальше:** чем отличаются liveness и readiness (отдельный `/readyz`, который становится неуспешным в начале завершения), как добавить трейсинг (OpenTelemetry), почему Go удобен для таких сервисов (один статический бинарник, маленький образ, горутины).

@@ -560,3 +560,205 @@ services:
 8. **Нет лимитов ресурсов** (`mem_limit`, `cpus`): утечка памяти в одном сервисе положит весь сервер.
 9. Приложение опубликовано напрямую на 8000 без reverse proxy и TLS.
 10. В целом compose на одном сервере — единая точка отказа. Для продакшена с требованиями к доступности стоит рассмотреть Kubernetes или хотя бы managed-БД.
+
+## Q: HPA не масштабирует Deployment. Найдите проблемы.
+level: middle
+type: practice
+freq: 2
+tags: hpa, kubernetes, ревью
+
+Под нагрузкой сервис тормозит, но количество подов не меняется. `kubectl get hpa` показывает `TARGETS: <unknown>/70%`.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api }
+spec:
+  replicas: 10
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec:
+      containers:
+      - name: api
+        image: registry.example.com/api:2.1.0
+        resources:
+          limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: api }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: api-server }
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target: { type: Utilization, averageUtilization: 70 }
+```
+
+???
+
+1. **`scaleTargetRef.name: api-server`**, а Deployment называется `api` — HPA смотрит на несуществующий объект (`kubectl describe hpa` покажет `FailedGetScale`).
+2. **`<unknown>` в TARGETS** — HPA не может получить метрики. Частые причины:
+   - **не установлен metrics-server** (`kubectl top pods` не работает);
+   - у контейнеров **нет `requests.cpu`**: процент утилизации считается **от requests**. Здесь заданы только limits — в этом случае Kubernetes подставляет requests равными limits, и проценты посчитаются, но такая конфигурация обычно не то, что задумано (requests в 1 CPU на под — дорого и планировщик резервирует много); явно заданные корректные requests обязательны.
+3. **`replicas: 10` в Deployment при `maxReplicas: 4`** — HPA сразу «сожмёт» Deployment до 4. Кроме того, если Deployment применяется через GitOps или `kubectl apply` с полем `replicas`, каждое применение **перезаписывает** решение HPA и вызывает «пилу». При использовании HPA поле `replicas` из манифеста убирают (или ArgoCD игнорирует его через `ignoreDifferences`).
+4. **`maxReplicas: 4`** — слишком низкий потолок для сервиса, которому нужно масштабироваться под нагрузкой; HPA упрётся в максимум (`ScalingLimited` в условиях HPA).
+5. Нет **readinessProbe** — новые поды получают трафик до готовности, а при старте с высоким CPU могут спровоцировать дальнейшее масштабирование.
+6. **CPU limit 1 при CPU-интенсивной нагрузке** может приводить к троттлингу: латентность растёт, хотя утилизация от requests формально может быть небольшой. Возможно, масштабировать стоит по другой метрике (RPS, латентность, длина очереди — через custom metrics или KEDA).
+7. Нет `behavior` — по умолчанию масштабирование вниз медленное (окно стабилизации 5 минут), а вверх может быть резким; стоит настроить под характер нагрузки.
+8. Даже при правильном HPA новые поды могут остаться в **Pending**, если в кластере нет места и не настроен Cluster Autoscaler / Karpenter.
+
+## Q: Найдите ошибки в Helm-шаблоне.
+level: middle
+type: practice
+freq: 2
+tags: helm, шаблоны, ревью
+
+После изменения шаблона `helm upgrade` падает с ошибкой разбора YAML, а у части сервисов в кластере неправильные значения.
+
+`values.yaml`:
+```yaml
+replicaCount: 2
+image:
+  repository: registry.example.com/api
+  tag: 1.10
+env:
+  LOG_LEVEL: info
+  FEATURE_X: true
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+```
+`templates/deployment.yaml` (фрагмент):
+```yaml
+spec:
+  replicas: {{ .Values.replicas }}
+  template:
+    spec:
+      containers:
+      - name: app
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        env:
+        {{- range $key, $value := .Values.env }}
+        - name: {{ $key }}
+          value: {{ $value }}
+        {{- end }}
+        resources:
+        {{ toYaml .Values.resources }}
+```
+
+???
+
+1. **`.Values.replicas`** вместо `.Values.replicaCount` — значения нет, подставится пустота: `replicas:` без значения (null) → Kubernetes использует 1, а не 2. Опечатки в именах values не дают ошибки — помогает `values.schema.json` и `helm lint` / `helm template` в CI.
+2. **`tag: 1.10` без кавычек** — YAML воспримет его как **число 1.1**, образ станет `registry.example.com/api:1.1`. Теги нужно задавать строками (`tag: "1.10"`) и в шаблоне использовать `{{ .Values.image.tag | quote }}` или `toString`.
+3. **`value: {{ $value }}` без кавычек** — для `FEATURE_X: true` получится `value: true` (булево), а Kubernetes требует **строку** в `env.value` → ошибка валидации. Правильно: `value: {{ $value | quote }}`.
+4. **`{{ toYaml .Values.resources }}` без отступа** — многострочный YAML вставится без нужного отступа, и вторая строка (`requests` / `limits`) окажется не на своём уровне → ошибка разбора или неверная структура. Правильно:
+   ```yaml
+   resources:
+     {{- toYaml .Values.resources | nindent 10 }}
+   ```
+   `nindent` добавляет перевод строки и отступ на заданное число пробелов.
+5. **Образ без `quote`** и без значения по умолчанию: `image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`.
+6. **Отсутствие `{{- with }}`** для необязательных блоков: если `resources` пустой, останется `resources:` с `null` — лучше обернуть в `with`.
+7. Нет обязательных проверок: для критичных значений — функция `required` (`{{ required "image.repository is required" .Values.image.repository }}`).
+
+**Отладка шаблонов:** `helm template . -f values.yaml --debug`, `helm lint`, `helm install --dry-run=server` (проверка API-сервером), плагин helm-unittest для тестов шаблонов.
+
+## Q: Найдите проблемы в Ingress с TLS.
+level: middle
+type: practice
+freq: 2
+tags: ingress, tls, ревью
+
+Сайт открывается с ошибкой сертификата `NET::ERR_CERT_AUTHORITY_INVALID` (браузер показывает «Kubernetes Ingress Controller Fake Certificate»), а API-запросы на `/api/v1/orders` возвращают 404.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: shop
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  tls:
+  - hosts: [shop.example.com]
+    secretName: shop-tls
+  rules:
+  - host: www.shop.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Exact
+        backend:
+          service: { name: api, port: { number: 80 } }
+      - path: /
+        pathType: Prefix
+        backend:
+          service: { name: frontend, port: { number: 80 } }
+```
+
+???
+
+1. **Хост в `tls.hosts` (`shop.example.com`) не совпадает с хостом правила (`www.shop.example.com`)**. Для `www.shop.example.com` подходящего сертификата нет → контроллер отдаёт свой **поддельный сертификат по умолчанию** (Fake Certificate). Хосты в `tls` и `rules` должны совпадать; если нужны оба имени — указать оба.
+2. **Не указан `ingressClassName`** — при нескольких контроллерах или отсутствии класса по умолчанию Ingress может не обслуживаться ни одним контроллером или обслуживаться не тем.
+3. Сертификат мог **не выпуститься**: проверить `kubectl get certificate -n shop` и цепочку `certificaterequest` → `order` → `challenge`. Частые причины: DNS ещё не указывает на балансировщик, порт 80 закрыт (HTTP-01), ClusterIssuer с таким именем не существует, превышены лимиты Let's Encrypt.
+4. **`pathType: Exact` для `/api`** — совпадёт только ровно `/api`, а `/api/v1/orders` уйдёт в правило `/` на фронтенд → 404. Нужен `pathType: Prefix`.
+5. **`rewrite-target: /` на весь Ingress** — каждый запрос переписывается в `/`: бэкенд API получит `/` вместо `/api/v1/orders`. Переписывание пути нужно делать осознанно, с захватом группы (`path: /api(/|$)(.*)`, `rewrite-target: /$2`, `use-regex: "true"`), и обычно в отдельном Ingress только для API.
+6. Сервис `api` на порту 80 — проверить, что Service действительно слушает 80 и `targetPort` указывает на порт приложения, а эндпоинты не пустые.
+7. Нет редиректа HTTP → HTTPS и HSTS (ingress-nginx делает редирект по умолчанию при наличии TLS — проверить аннотацию `ssl-redirect`).
+
+**Отладка:** `kubectl describe ingress shop`, логи Ingress-контроллера, `curl -v --resolve www.shop.example.com:443:<IP> https://www.shop.example.com/api/v1/orders`, `openssl s_client -connect <IP>:443 -servername www.shop.example.com` — какой сертификат реально отдаётся.
+
+## Q: Найдите ошибку в NetworkPolicy, из-за которой база данных доступна шире, чем задумано.
+level: senior
+type: practice
+freq: 1
+tags: networkpolicy, безопасность, ревью
+
+Задумано: к PostgreSQL в namespace `data` могут подключаться **только** поды с меткой `app: billing` из namespace `billing`. Аудит показал, что к БД подключаются и другие поды.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-access
+  namespace: data
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: billing }
+    - podSelector:
+        matchLabels: { app: billing }
+    ports:
+    - port: 5432
+```
+
+???
+
+1. **Главная ошибка — «ИЛИ» вместо «И».** В `from` указаны **два отдельных элемента списка** (каждый начинается с `-`):
+   - любой под из namespace `billing` (**любой**, не только `app: billing`);
+   - **ИЛИ** под с меткой `app: billing` из **того же namespace `data`** (podSelector без namespaceSelector выбирает поды в namespace самой политики).
+   Нужно объединить в **один элемент** — тогда условия складываются через «И»:
+   ```yaml
+   ingress:
+   - from:
+     - namespaceSelector:
+         matchLabels: { kubernetes.io/metadata.name: billing }
+       podSelector:
+         matchLabels: { app: billing }
+     ports:
+     - { protocol: TCP, port: 5432 }
+   ```
+   Разница всего в одном символе `-`, поэтому такие политики обязательно ревьюят и тестируют.
+2. **Не указан `policyTypes`** — для политики только с `ingress` Kubernetes считает его `[Ingress]`, это работает, но явное указание делает намерение понятным и защищает от ошибок при добавлении egress.
+3. **Нет default deny** в namespace `data`. Эта политика ограничивает доступ только к подам `app: postgres`. Если в namespace есть другие сервисы БД (реплики с другой меткой, pgbouncer, экспортер) без своих политик — к ним доступ открыт всем.
+4. **Метки подов может поставить кто угодно**, у кого есть право создавать поды в namespace `billing`: доверие строится на RBAC в этом namespace. Для более строгой изоляции — политики CNI по ServiceAccount или идентичности (Cilium), mTLS с авторизацией (service mesh), плюс аутентификация в самой БД.
+5. **CNI должен поддерживать NetworkPolicy**, иначе политика молча игнорируется — проверить реальное поведение тестом (`kubectl exec` из постороннего пода и `nc -zv postgres.data 5432`), а не только наличие манифеста.

@@ -318,3 +318,142 @@ variable "subnets" {
 - `output` — выход модуля: значения для пользователя, для других модулей (`module.vpc.vpc_id`) или других state.
 
 **Практика:** отдельный `.tfvars` на окружение (`dev.tfvars`, `prod.tfvars`), секреты не в tfvars в Git, а через `TF_VAR_` из секрет-хранилища CI или data source из Vault/Secrets Manager.
+
+## Q: Что такое Terragrunt и когда он нужен?
+level: senior
+type: theory
+freq: 2
+tags: terragrunt, структура
+
+**Terragrunt** — обёртка над Terraform/OpenTofu, которая решает проблему **повторяющегося кода** при множестве окружений и компонентов.
+
+**Проблемы «чистого» Terraform на большом проекте:**
+- в каждом каталоге окружения повторяются блоки `backend`, `provider`, версии;
+- **зависимости между стеками** (EKS зависит от VPC) приходится передавать через `terraform_remote_state` или вручную;
+- нужно вручную запускать `apply` по многим каталогам в правильном порядке.
+
+**Как решает Terragrunt:**
+```
+live/
+  root.hcl                    # общее: backend и провайдер генерируются для всех
+  prod/
+    env.hcl                   # переменные окружения
+    vpc/terragrunt.hcl
+    eks/terragrunt.hcl
+```
+```hcl
+# live/prod/eks/terragrunt.hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+
+terraform {
+  source = "git::https://gitlab.example.com/infra/modules.git//eks?ref=v2.3.0"
+}
+
+dependency "vpc" {
+  config_path = "../vpc"
+  mock_outputs = { vpc_id = "vpc-mock", private_subnets = ["subnet-mock"] }   # для plan до создания VPC
+}
+
+inputs = {
+  cluster_name = "prod"
+  vpc_id       = dependency.vpc.outputs.vpc_id
+  subnet_ids   = dependency.vpc.outputs.private_subnets
+}
+```
+- **DRY-конфигурация** backend и провайдеров: ключ state формируется автоматически из пути каталога;
+- **явные зависимости** между модулями и чтение их outputs;
+- `terragrunt run --all plan` (в старых версиях `run-all`) — выполнение по всем модулям в порядке зависимостей;
+- закрепление версий модулей на уровне окружения (prod может отставать от dev).
+
+**Минусы:** ещё один инструмент и уровень абстракции, свой синтаксис, сложнее отладка, массовый `apply` по всем модулям рискован.
+
+**Альтернативы:** обычный Terraform с аккуратной структурой и CI, который сам определяет изменённые каталоги; **Terraform Stacks** (HCP Terraform); платформы Spacelift, env0, Atlantis с зависимостями между проектами; Terramate.
+
+**Ответ на собеседовании:** Terragrunt оправдан при десятках окружений, регионов и аккаунтов с одинаковой структурой. Для пары окружений проще обойтись чистым Terraform.
+
+## Q: Что такое Packer и «золотые» образы? Как организовать их сборку?
+level: middle
+type: practice
+freq: 2
+tags: packer, образы, immutable
+
+**Packer** (HashiCorp) — сборка **образов машин** из кода: AMI в AWS, образы GCP и Azure, Yandex Compute Image, шаблоны VMware и Proxmox, образы Vagrant, а также Docker-образы. Один шаблон может собирать образы для нескольких платформ.
+
+**Как работает:** Packer поднимает временную ВМ из базового образа → выполняет **provisioners** (shell-скрипты, Ansible, загрузку файлов) → делает из ВМ образ → удаляет временную ВМ.
+```hcl
+packer {
+  required_plugins {
+    amazon  = { source = "github.com/hashicorp/amazon", version = "~> 1.3" }
+    ansible = { source = "github.com/hashicorp/ansible", version = "~> 1.1" }
+  }
+}
+
+source "amazon-ebs" "base" {
+  region        = "eu-central-1"
+  instance_type = "t3.small"
+  ssh_username  = "ubuntu"
+  ami_name      = "base-ubuntu-24.04-{{timestamp}}"
+  source_ami_filter {
+    filters     = { name = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" }
+    owners      = ["099720109477"]
+    most_recent = true
+  }
+  tags = { os = "ubuntu-24.04", built_by = "packer", git_sha = var.git_sha }
+}
+
+build {
+  sources = ["source.amazon-ebs.base"]
+  provisioner "ansible" { playbook_file = "./ansible/base.yml" }   # hardening, агенты
+  provisioner "shell"   { inline = ["sudo cloud-init clean"] }      # очистка перед снимком
+}
+```
+
+**«Золотой» образ** — заранее подготовленный базовый образ компании: обновления безопасности, hardening по CIS, агенты мониторинга и логирования, сертификаты корпоративного CA, настройки времени и DNS.
+
+**Зачем:**
+- **быстрый старт** ВМ в автомасштабировании (не нужно ставить пакеты при загрузке — минуты экономятся при пиках);
+- **одинаковость** серверов, нет дрейфа конфигураций;
+- **immutable-подход**: обновление = новый образ + замена инстансов (rolling replace в ASG), откат — предыдущий образ;
+- соответствие требованиям безопасности проверяется один раз при сборке.
+
+**Конвейер образов:**
+1. сборка по расписанию (например, еженедельно ради обновлений) и при изменении кода шаблона;
+2. **тестирование образа** (InSpec, Goss, Testinfra): порты, сервисы, отсутствие паролей и лишних пакетов;
+3. сканирование уязвимостей;
+4. публикация с версией и тегами, распространение в другие регионы и аккаунты;
+5. обновление ссылки на образ в Terraform (data source с фильтром по тегам или параметр в SSM);
+6. удаление старых образов по политике хранения.
+
+Альтернативы: AWS EC2 Image Builder, Azure Image Builder; для Kubernetes-нод — готовые оптимизированные образы провайдера (Bottlerocket, Talos, Flatcar).
+
+## Q: Как безопасно обновлять версии Terraform и провайдеров?
+level: senior
+type: practice
+freq: 1
+tags: terraform, обновления
+
+**Закрепление версий:**
+```hcl
+terraform {
+  required_version = "~> 1.9"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.70" }   # 5.x, не меньше 5.70
+  }
+}
+```
+- `~> 5.70` — разрешает 5.71, 5.80, но не 6.0; мажорные версии провайдеров содержат **breaking changes**;
+- файл **`.terraform.lock.hcl`** фиксирует точную выбранную версию и хеши провайдеров — его **коммитят**; без него разные машины (и CI) могут получить разные версии;
+- в **модулях** указывают минимальные совместимые версии (`>= 5.0`), а точное закрепление — в корневых конфигурациях.
+
+**Процесс обновления провайдера:**
+1. прочитать **CHANGELOG и upgrade guide** (особенно для мажорных версий: переименованные атрибуты, разделённые ресурсы — например, в AWS 4.0 настройки `aws_s3_bucket` были вынесены в отдельные ресурсы);
+2. обновить ограничение версии и выполнить `terraform init -upgrade` — lock-файл обновится;
+3. `terraform plan` на **всех** окружениях: ожидается **отсутствие изменений** реальных ресурсов; неожиданные изменения или пересоздания — разбирать до применения;
+4. применять сначала в dev, затем stage, затем prod;
+5. для нескольких платформ (разработчики на macOS, CI на Linux) — `terraform providers lock -platform=linux_amd64 -platform=darwin_arm64`, иначе в lock-файле не будет нужных хешей.
+
+**Автоматизация:** Renovate или Dependabot создают MR с обновлением версий провайдеров и модулей, CI прикладывает plan — инженер видит последствия.
+
+**Обновление самого Terraform:** обычно безопасно в пределах 1.x, но state после применения новой версией нельзя использовать старой версией бинарника; версию фиксируют в CI-образе и в `.terraform-version` (tfenv, tenv) для разработчиков.
+
+**Переход на OpenTofu:** совместим с Terraform 1.5.x по state и синтаксису, миграция обычно сводится к замене бинарника и проверке plan; дальше пути проектов расходятся (у каждого свои новые функции), поэтому смешивать их в одном проекте не стоит.

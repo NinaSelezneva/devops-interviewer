@@ -240,3 +240,106 @@ server {
 Фильтры: `default`, `upper`, `join`, `to_nice_yaml`, `regex_replace`, `ipaddr`. Переменные других хостов: `hostvars['db1']['ansible_host']`, группы: `groups['db']`.
 
 **Модуль `template` vs `copy`:** `template` рендерит Jinja2 на управляющей машине и копирует результат, `copy` копирует файл как есть.
+
+## Q: Как хранить секреты в Ansible? Как работает Ansible Vault?
+level: middle
+type: practice
+freq: 3
+tags: ansible-vault, секреты
+
+**Ansible Vault** шифрует файлы или отдельные значения (AES-256), чтобы секреты можно было хранить в Git рядом с плейбуками.
+
+**Шифрование файлов целиком:**
+```bash
+ansible-vault create group_vars/prod/vault.yml
+ansible-vault edit group_vars/prod/vault.yml
+ansible-vault encrypt secrets.yml / decrypt / view
+ansible-vault rekey group_vars/prod/vault.yml      # сменить пароль
+```
+
+**Шифрование отдельной переменной:**
+```bash
+ansible-vault encrypt_string 'S3cr3t!' --name 'db_password'
+```
+```yaml
+db_password: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  6231...
+```
+
+**Рекомендуемая структура** — открытый файл ссылается на зашифрованный, чтобы было видно, **какие** переменные существуют, без раскрытия **значений**:
+```yaml
+# group_vars/prod/vars.yml
+db_password: "{{ vault_db_password }}"
+# group_vars/prod/vault.yml (зашифрован)
+vault_db_password: "S3cr3t!"
+```
+
+**Запуск:**
+```bash
+ansible-playbook site.yml --ask-vault-pass
+ansible-playbook site.yml --vault-password-file ~/.vault_pass      # файл НЕ в репозитории
+ansible-playbook site.yml --vault-id prod@~/.vault_pass_prod --vault-id dev@prompt
+```
+**Vault ID** позволяют иметь разные пароли для разных окружений (разработчики знают пароль dev, но не prod). В CI пароль передаётся через защищённую переменную или скрипт, который получает его из секрет-хранилища (`--vault-password-file` может быть исполняемым скриптом).
+
+**Не допускать утечек в логи:** `no_log: true` для задач, работающих с секретами (иначе значения попадут в вывод при ошибке или в режиме `-v`).
+
+**Ограничения Ansible Vault:** один общий пароль на окружение, нет аудита доступа, ротация секрета требует правки файла и нового коммита, всё расшифровывается на машине, где запускается Ansible.
+
+**Альтернатива для зрелой инфраструктуры** — брать секреты из внешнего хранилища во время выполнения:
+```yaml
+db_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/data/shop/db:password') }}"
+```
+или lookup-плагины для AWS Secrets Manager, Yandex Lockbox и др. Тогда в Git вообще нет секретов, даже зашифрованных.
+
+## Q: Как тестировать Ansible-роли? Что такое Molecule?
+level: senior
+type: practice
+freq: 2
+tags: molecule, тестирование
+
+**Уровни проверки:**
+1. **Статические**: `ansible-lint` (лучшие практики: полные имена модулей, `changed_when` у `command`, отсутствие `latest`), `yamllint`, `ansible-playbook --syntax-check`.
+2. **Dry-run на реальных хостах**: `--check --diff` — что изменится (не все модули корректно поддерживают check mode).
+3. **Тестирование роли в изолированном окружении — Molecule.**
+4. Интеграционное тестирование всего плейбука на staging.
+
+**Molecule** — фреймворк для тестирования ролей: поднимает временные экземпляры (Docker/Podman-контейнеры, ВМ через Vagrant или облако), применяет роль и проверяет результат.
+
+```
+roles/nginx/
+  molecule/default/
+    molecule.yml      # драйвер и платформы (например, ubuntu 24.04 и rocky 9)
+    converge.yml      # плейбук, применяющий роль
+    verify.yml        # проверки результата
+```
+```yaml
+# molecule.yml
+driver: { name: podman }
+platforms:
+  - name: ubuntu
+    image: docker.io/geerlingguy/docker-ubuntu2404-ansible
+    pre_build_image: true
+  - name: rocky
+    image: docker.io/geerlingguy/docker-rockylinux9-ansible
+    pre_build_image: true
+provisioner: { name: ansible }
+verifier: { name: ansible }
+```
+```yaml
+# verify.yml
+- hosts: all
+  tasks:
+    - name: Nginx is listening on 80
+      ansible.builtin.wait_for: { port: 80, timeout: 10 }
+    - name: Config is valid
+      ansible.builtin.command: nginx -t
+      changed_when: false
+```
+
+**`molecule test`** выполняет полный цикл: lint → создание экземпляров → **converge** (применение роли) → **idempotence** (повторный запуск, ожидается `changed=0` — если что-то изменилось, тест падает) → **verify** → удаление экземпляров. Для разработки удобны отдельные шаги: `molecule converge`, `molecule login`, `molecule verify`.
+
+**Особенности:** контейнеры — не полноценные ВМ (systemd, ядро, сеть отличаются), поэтому используют специальные образы с systemd или драйверы ВМ для ролей, работающих с ядром и сетью. Проверки можно писать на **Testinfra** (Python) вместо verify.yml.
+
+**В CI:** запускать Molecule на каждый MR в репозиторий ролей, матрица по поддерживаемым ОС; роли публиковать с версиями (теги, коллекции) и закреплять версии в проектах.
