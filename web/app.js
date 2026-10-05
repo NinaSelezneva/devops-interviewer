@@ -593,6 +593,24 @@
     try { localStorage.setItem(THEME_KEY, t); } catch { /* нет доступа */ }
   });
 
+  // ---------- Статистика посещений (GoatCounter) ----------
+  // Разделы живут в hash-адресе, который GoatCounter сам не видит, поэтому каждый экран
+  // отправляется как отдельный просмотр. Параметры (поисковые запросы) не передаются.
+  let lastTracked = null;
+  let pendingView = null;
+  function trackView(section, id) {
+    const path = section === 'home' ? '/' : `/${section}${id ? `/${id}` : ''}`;
+    if (path === lastTracked) return;
+    lastTracked = path;
+    const gc = window.goatcounter;
+    if (gc && typeof gc.count === 'function') gc.count({ path, title: document.title });
+    else pendingView = path;   // скрипт счётчика ещё не загрузился
+  }
+  document.getElementById('goatcounter')?.addEventListener('load', () => {
+    if (pendingView && window.goatcounter?.count) window.goatcounter.count({ path: pendingView, title: document.title });
+    pendingView = null;
+  });
+
   // ---------- Роутер ----------
   function route() {
     cleanup();
@@ -608,6 +626,7 @@
     else viewHome();
     renderFooter();
     window.scrollTo(0, 0);
+    trackView(section, section === 'topic' && TOPIC.has(parts[1]) ? parts[1] : null);
   }
   window.addEventListener('hashchange', route);
   // Ссылка на текущий адрес (например, «Завершить» внутри сессии) не вызывает hashchange — перерисовываем вручную
