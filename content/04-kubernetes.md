@@ -377,3 +377,97 @@ tags: pod, архитектура
 Жизненный цикл: sandbox создаётся первым и удаляется последним; перезапуск приложения внутри пода не пересоздаёт sandbox. Если умирает сам pause-контейнер — пересоздаётся весь под (новый IP).
 
 Где увидеть: на ноде `crictl pods` (sandbox'ы) и `crictl ps -a`; в Docker-эпоху — контейнеры `k8s_POD_...` в `docker ps`. Образ pause должен быть доступен на нодах — в закрытых контурах его нужно зеркалировать в свой реестр (настройка `sandbox_image` в containerd), иначе поды висят в `ContainerCreating`.
+
+## Q: Напишите манифест Deployment. Что такое ResourceQuota и LimitRange?
+level: middle
+type: practice
+freq: 3
+tags: deployment, манифест, квоты
+
+Минимально грамотный Deployment с ресурсами, пробами и безопасным контекстом:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: shop
+  labels: { app: api }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app: api }          # должен совпадать с labels шаблона; неизменяем
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: api }
+    spec:
+      serviceAccountName: api
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+      - name: api
+        image: registry.example.com/shop/api:1.4.2
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_HOST
+          valueFrom: { configMapKeyRef: { name: api-config, key: db_host } }
+        - name: DB_PASSWORD
+          valueFrom: { secretKeyRef: { name: api-secrets, key: db_password } }
+        resources:
+          requests: { cpu: 200m, memory: 256Mi }
+          limits: { memory: 256Mi }
+        readinessProbe:
+          httpGet: { path: /ready, port: 8080 }
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          initialDelaySeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: ["ALL"] }
+        lifecycle:
+          preStop: { exec: { command: ["sleep", "10"] } }
+      terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector: { matchLabels: { app: api } }
+```
+Что стоит проговорить: связь `selector` ↔ `labels` (по ним Deployment находит свои ReplicaSet и поды, а Service — эндпоинты), фиксированный тег образа вместо `latest`, секреты через `secretKeyRef`, к Deployment обычно добавляют Service, PDB и HPA.
+
+**ResourceQuota** — ограничивает **суммарное** потребление ресурсов в **namespace**:
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: team-quota, namespace: shop }
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.memory: 60Gi
+    pods: "100"
+    services.loadbalancers: "2"
+    persistentvolumeclaims: "20"
+    requests.storage: 500Gi
+```
+Если квота задана на `requests.cpu`, то **каждый** под в namespace обязан указывать requests, иначе API-сервер его отклонит. При превышении квоты новые поды не создаются: ошибка `exceeded quota` появляется в событиях ReplicaSet, а не пода. Состояние смотрят командой `kubectl describe quota -n shop`.
+
+**LimitRange** — ограничения и значения по умолчанию для **каждого отдельного** контейнера, пода или PVC в namespace:
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata: { name: defaults, namespace: shop }
+spec:
+  limits:
+  - type: Container
+    defaultRequest: { cpu: 100m, memory: 128Mi }   # подставится, если requests не указаны
+    default: { memory: 256Mi }                      # limits по умолчанию
+    max: { cpu: "2", memory: 4Gi }
+    min: { cpu: 50m, memory: 64Mi }
+```
+Вместе они дают multi-tenant кластер: квота делит ресурсы между командами, LimitRange не даёт одному поду забрать всё и подставляет значения по умолчанию, чтобы поды без requests проходили квоту.
