@@ -1,0 +1,14 @@
+{
+  "name": "devops-interviewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Тренажёр для подготовки к собеседованию Senior DevOps инженера",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && npx --yes serve web -l 8080"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

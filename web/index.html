@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevOps Interviewer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">🎯 DevOps Interviewer <span class="brand-sub">Senior</span></a>
+    <nav class="nav">
+      <a href="#/" data-nav="home">Обзор</a>
+      <a href="#/train" data-nav="train">Тренировка</a>
+      <a href="#/interview" data-nav="interview">Собеседование</a>
+      <a href="#/search" data-nav="search">Поиск</a>
+    </nav>
+    <button class="icon-btn" id="theme-toggle" title="Сменить тему" aria-label="Сменить тему">◐</button>
+  </header>
+  <main id="app" class="container"></main>
+  <footer class="footer container">
+    <span id="footer-stats"></span>
+    <span class="footer-actions">
+      <button class="link-btn" id="export-btn">Экспорт прогресса</button>
+      <label class="link-btn">Импорт<input type="file" id="import-input" accept="application/json" hidden></label>
+      <button class="link-btn danger" id="reset-btn">Сбросить</button>
+    </span>
+  </footer>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
