@@ -146,6 +146,8 @@ textarea { width: 100%; min-height: 110px; resize: vertical; }
 .prose table { border-collapse: collapse; font-size: 14px; min-width: 100%; }
 .prose th, .prose td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
 .prose th { background: var(--surface-2); }
+.task { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 14px; margin: 0 0 14px; }
+.qbody .task { margin-top: 12px; }
 .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 4px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; }
 
 .theory { margin-bottom: 8px; }

@@ -39,7 +39,9 @@ function renderList(lines) {
     if (!top || it.indent > top.indent) {
       const tag = it.ordered ? 'ol' : 'ul';
       stack.push({ indent: it.indent, tag });
-      html += `<${tag}><li>`;
+      // нумерованный список, прерванный блоком кода, продолжает нумерацию
+      const start = it.ordered && it.num > 1 ? ` start="${it.num}"` : '';
+      html += `<${tag}${start}><li>`;
     } else {
       html += '</li><li>';
     }
@@ -57,13 +59,14 @@ export function md(src) {
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
-    const fence = line.match(/^```(\w*)/);
+    const fence = line.match(/^(\s*)```(\w*)/);
     if (fence) {
       const buf = [];
+      const indent = fence[1].length;
       i++;
-      while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]);
+      while (i < lines.length && !lines[i].trim().startsWith('```')) buf.push(lines[i++].slice(Math.min(indent, lines[i - 1].search(/\S|$/))));
       i++;
-      out.push(`<pre><code class="lang-${fence[1] || 'text'}">${esc(buf.join('\n'))}</code></pre>`);
+      out.push(`<pre><code class="lang-${fence[2] || 'text'}">${esc(buf.join('\n'))}</code></pre>`);
       continue;
     }
     const h = line.match(/^(#{1,4})\s+(.*)$/);
@@ -89,7 +92,8 @@ export function md(src) {
       const items = [];
       while (i < lines.length) {
         const m = lines[i].match(listRe);
-        if (m) { items.push({ indent: m[1].length, ordered: /\d/.test(m[2]), text: m[3] }); i++; continue; }
+        if (m) { items.push({ indent: m[1].length, ordered: /\d/.test(m[2]), num: parseInt(m[2], 10), text: m[3] }); i++; continue; }
+        if (/^\s*```/.test(lines[i])) break;   // блок кода внутри пункта списка
         // продолжение пункта на следующей строке с отступом
         if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && items.length) { items.at(-1).text += ' ' + lines[i].trim(); i++; continue; }
         break;
@@ -138,7 +142,11 @@ function parseTopic(file, raw) {
     if (!TYPES.includes(qm.type)) throw new Error(`${where}: type должен быть одним из ${TYPES}`);
     const freq = Number(qm.freq);
     if (![1, 2, 3].includes(freq)) throw new Error(`${where}: freq 1..3`);
-    const answer = lines.join('\n').trim();
+    // Строка «???» отделяет условие задачи (показывается до ответа) от эталонного ответа
+    const parts = lines.join('\n').split(/^\?\?\?\s*$/m);
+    if (parts.length > 2) throw new Error(`${where}: больше одного разделителя ???`);
+    const task = parts.length === 2 ? parts[0].trim() : '';
+    const answer = parts.at(-1).trim();
     if (answer.length < 80) throw new Error(`${where}: слишком короткий ответ`);
     return {
       id: `${meta.id}-${qm.id || hash(q)}`,
@@ -148,6 +156,7 @@ function parseTopic(file, raw) {
       type: qm.type,
       freq,
       tags: (qm.tags || '').split(',').map((t) => t.trim()).filter(Boolean),
+      ...(task && { p: md(task) }),
       a: md(answer),
     };
   });

@@ -703,3 +703,88 @@ configMapGenerator:
 - для **сторонних** приложений (ingress-nginx, Prometheus, cert-manager) — Helm-чарты;
 - для **собственных** сервисов — по вкусу команды: свой Helm-чарт (часто один общий «библиотечный» чарт на все микросервисы) или Kustomize с overlays;
 - их можно **комбинировать**: Kustomize умеет рендерить Helm-чарты (`helmCharts:`), ArgoCD поддерживает оба варианта.
+
+## Q: Что такое service mesh? Istio, Linkerd, Cilium — в чём разница и когда mesh действительно нужен?
+level: senior
+type: theory
+freq: 2
+tags: service-mesh, istio, linkerd
+
+**Service mesh** — инфраструктурный слой, который берёт на себя сетевое взаимодействие между сервисами **без изменения их кода**:
+- **безопасность**: автоматический **mTLS** между всеми сервисами, идентичность сервисов (SPIFFE), авторизация «кто к кому может обращаться» на уровне L7;
+- **управление трафиком**: канареечные и blue-green релизы по весам и заголовкам, ретраи, таймауты, circuit breaking, зеркалирование трафика, fault injection;
+- **наблюдаемость**: единообразные метрики RED для всех сервисов, распределённый трейсинг (распространение заголовков всё равно нужно в приложении), карта зависимостей.
+
+**Архитектура:** **data plane** — прокси, через которые идёт трафик; **control plane** — раздаёт им конфигурацию и сертификаты.
+
+**Модели data plane:**
+- **Sidecar** — прокси (обычно Envoy) в каждом поде, трафик перехватывается через iptables. Минусы: дополнительные CPU и память на каждый под, задержка, сложности с порядком запуска контейнеров и Job'ами.
+- **Ambient mode (Istio)** — без sidecar: L4 и mTLS обеспечивает общий узловой прокси **ztunnel**, а L7-функции — опциональные **waypoint**-прокси на namespace или сервис. Меньше накладных расходов.
+- **eBPF / узловой прокси (Cilium Service Mesh)** — часть функций в ядре через eBPF, L7 — через Envoy на ноде.
+
+**Сравнение:**
+| | Istio | Linkerd | Cilium |
+|---|---|---|---|
+| Прокси | Envoy (sidecar или ambient) | собственный лёгкий прокси на Rust | eBPF + Envoy на ноде |
+| Возможности | максимальные: сложная маршрутизация, внешний трафик, мультикластер | основное (mTLS, ретраи, метрики) с минимальной настройкой | mesh как продолжение CNI |
+| Сложность | высокая | низкая | средняя, если Cilium уже используется как CNI |
+
+**Когда mesh нужен:** десятки и сотни микросервисов, требования к шифрованию всего внутреннего трафика (zero trust, регуляторы), сложные стратегии выкатки, разные языки (нельзя решить всё одной библиотекой).
+
+**Когда не нужен:** несколько сервисов, команда без опыта эксплуатации — mesh добавляет сложный компонент, который сам может стать причиной инцидентов. Часть задач решается проще: mTLS — через cert-manager или CNI с шифрованием (Cilium, WireGuard), канарейки — Argo Rollouts с Ingress, метрики — библиотеками.
+
+## Q: Как в Istio сделать канареечный релиз, ретраи и включить mTLS? Как отлаживать проблемы mesh?
+level: senior
+type: practice
+freq: 2
+tags: istio, канарейка, mtls
+
+**Канарейка 90/10 и ретраи** (классический API Istio; в новых установках то же можно описать через Gateway API `HTTPRoute`):
+```yaml
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata: { name: reviews }
+spec:
+  host: reviews
+  subsets:                                  # версии по меткам подов
+  - { name: v1, labels: { version: v1 } }
+  - { name: v2, labels: { version: v2 } }
+  trafficPolicy:
+    outlierDetection:                       # выкидывать неисправные поды из балансировки
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 30s
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: { name: reviews }
+spec:
+  hosts: [reviews]
+  http:
+  - match:
+    - headers: { x-canary: { exact: "true" } }   # тестировщики идут на v2 по заголовку
+    route: [{ destination: { host: reviews, subset: v2 } }]
+  - route:
+    - { destination: { host: reviews, subset: v1 }, weight: 90 }
+    - { destination: { host: reviews, subset: v2 }, weight: 10 }
+    timeout: 3s
+    retries: { attempts: 2, perTryTimeout: 1s, retryOn: "5xx,connect-failure,reset" }
+```
+Автоматизировать постепенное увеличение веса с откатом по метрикам — **Argo Rollouts** или **Flagger**.
+
+**Строгий mTLS** для namespace:
+```yaml
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata: { name: default, namespace: shop }
+spec:
+  mtls: { mode: STRICT }      # PERMISSIVE — принимать и mTLS, и открытый трафик (для миграции)
+```
+Плюс **AuthorizationPolicy** — какие сервисы (по ServiceAccount) могут обращаться к каким и с какими методами и путями.
+
+**Отладка:**
+- `istioctl analyze` — ошибки конфигурации (VirtualService ссылается на несуществующий subset и т.д.);
+- `istioctl proxy-status` — синхронизирована ли конфигурация прокси с control plane;
+- `istioctl proxy-config routes|clusters|endpoints <pod>` — что реально получил Envoy;
+- логи `istio-proxy`: **флаги ответа Envoy** в access log многое объясняют: `UF` (upstream connection failure), `UH` (нет здоровых эндпоинтов), `URX` (исчерпаны ретраи), `NR` (нет маршрута), `UC` (апстрим закрыл соединение);
+- типичные проблемы: **503 после включения STRICT mTLS** (клиент без sidecar), ретраи mesh **поверх** ретраев приложения (лавина запросов), sidecar ещё не готов, когда приложение уже делает запросы при старте (`holdApplicationUntilProxyStarts`), Job'ы не завершаются из-за живого sidecar (решено native sidecars в Kubernetes 1.29+).

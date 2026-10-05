@@ -100,10 +100,12 @@
       <button class="btn good" data-grade="2">Знаю <kbd>3</kbd></button>
     </div>`;
 
+  const taskBlock = (q) => (q.p ? `<div class="task prose">${q.p}</div>` : '');
+
   function questionItem(q, withTopic = false) {
     return `<details class="card qitem" data-q="${q.id}">
       <summary><span class="chev">▸</span><span class="qtext">${esc(q.q)}<br>${badges(q, withTopic)}</span></summary>
-      <div class="qbody"><div class="prose">${q.a}</div>${rateButtons(q.id)}</div>
+      <div class="qbody">${taskBlock(q)}<div class="prose">${q.a}</div>${rateButtons(q.id)}</div>
     </details>`;
   }
 
@@ -320,6 +322,7 @@
         <div class="card flash">
           ${badges(current, true)}
           <div class="q">${esc(current.q)}</div>
+          ${taskBlock(current)}
           <textarea id="draft" placeholder="Набросайте ответ тезисами (необязательно). Ctrl+Enter — показать эталон"></textarea>
           <div class="actions"><button class="btn primary" id="reveal">Показать ответ <kbd>␣</kbd></button>
             <a class="btn" href="#/train">Завершить</a></div>
@@ -431,6 +434,7 @@
         <div class="card flash">
           <span class="badges"><span class="badge">${TOPIC.get(q.topic).icon} ${esc(TOPIC.get(q.topic).title)}</span></span>
           <div class="q">${esc(q.q)}</div>
+          ${taskBlock(q)}
           <textarea id="draft" placeholder="Ваш ответ: тезисы, команды, схема рассуждений. Ctrl+Enter — завершить ответ"></textarea>
           <div class="actions"><button class="btn primary" id="reveal">Завершить ответ и показать эталон</button></div>
           <div id="answer"></div>
@@ -509,7 +513,7 @@
   }
 
   // ---------- Экран: поиск ----------
-  const searchIndex = ALL.map((q) => ({ q, text: `${q.q} ${q.tags.join(' ')} ${stripTags(q.a)}`.toLowerCase() }));
+  const searchIndex = ALL.map((q) => ({ q, text: `${q.q} ${q.tags.join(' ')} ${stripTags(q.p || '')} ${stripTags(q.a)}`.toLowerCase() }));
   function viewSearch(params) {
     const initial = params.get('q') || '';
     app.innerHTML = `
