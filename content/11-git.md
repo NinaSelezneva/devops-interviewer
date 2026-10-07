@@ -28,6 +28,7 @@ level: middle
 type: theory
 freq: 3
 tags: merge, rebase
+theory: merge-rebase, model
 
 - **merge** создаёт **merge-коммит** с двумя родителями, сохраняя историю как она была. Безопасно для общих веток, история «нелинейная». Fast-forward, если целевая ветка не ушла вперёд.
 - **rebase** **переписывает** коммиты ветки поверх новой базы — новые хеши, линейная история, легче читать и делать `bisect`.
@@ -45,6 +46,7 @@ level: senior
 type: theory
 freq: 3
 tags: ветвление
+theory: workflows
 
 - **GitFlow**: долгоживущие `main` и `develop`, ветки `feature/*`, `release/*`, `hotfix/*`. Подходит для продуктов с версионными релизами (коробочное ПО, мобильные приложения, поддержка нескольких версий). Минусы — сложность, долгие ветки, большие мержи, медленная обратная связь; не сочетается с continuous delivery.
 - **GitHub Flow**: одна `main` всегда готова к деплою, короткие feature-ветки и PR, деплой после мержа. Просто, подходит для веб-сервисов.
@@ -57,6 +59,7 @@ level: middle
 type: practice
 freq: 2
 tags: reflog, восстановление
+theory: undo, model
 
 **reflog** записывает каждое перемещение HEAD и веток локально (по умолчанию хранится ~90 дней):
 
@@ -76,6 +79,7 @@ level: middle
 type: theory
 freq: 2
 tags: revert, reset
+theory: undo
 
 - **`git revert <commit>`** создаёт **новый коммит**, отменяющий изменения указанного. История не переписывается — **безопасно для общих веток**. Revert merge-коммита: `git revert -m 1 <merge>` (указать «основного» родителя); повторное вливание той же ветки потом потребует revert самого revert.
 - **`git reset`** перемещает указатель ветки:
@@ -91,6 +95,7 @@ level: senior
 type: scenario
 freq: 2
 tags: история, секреты
+theory: history-rewrite
 
 Для секрета: **сначала отозвать/ротировать** — удаление из истории не отменяет компрометацию.
 
@@ -116,6 +121,7 @@ level: middle
 type: practice
 freq: 1
 tags: bisect
+theory: history-rewrite
 
 **`git bisect`** — бинарный поиск по истории:
 ```bash
@@ -135,6 +141,7 @@ level: middle
 type: practice
 freq: 2
 tags: stash, cherry-pick
+theory: undo
 
 **git stash** — временно спрятать незакоммиченные изменения, чтобы получить чистое рабочее дерево (переключиться на другую ветку, подтянуть изменения, срочно исправить баг).
 ```bash
@@ -164,6 +171,7 @@ level: middle
 type: practice
 freq: 3
 tags: конфликты, gitignore
+theory: merge-rebase, team-tooling
 
 **Конфликт** возникает, когда обе ветки изменили одни и те же строки файла (или одна изменила, а другая удалила файл), и Git не может объединить их автоматически.
 
@@ -219,6 +227,7 @@ level: middle
 type: practice
 freq: 2
 tags: hooks, pre-commit
+theory: team-tooling
 
 **Git hooks** — скрипты, которые Git запускает при событиях. Лежат в `.git/hooks/` (не версионируются вместе с репозиторием) или в каталоге из `core.hooksPath`.
 
@@ -263,6 +272,7 @@ level: middle
 type: theory
 freq: 1
 tags: submodule, subtree
+theory: team-tooling
 
 **Задача:** общие Terraform-модули, Ansible-роли, CI-шаблоны или библиотеки нужны в нескольких репозиториях.
 

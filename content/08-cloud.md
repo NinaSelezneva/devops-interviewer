@@ -32,6 +32,7 @@ level: senior
 type: design
 freq: 3
 tags: vpc, сеть
+theory: network
 
 - **VPC** с непересекающимся CIDR (например, 10.20.0.0/16), растянутая на **3 зоны доступности**.
 - **Публичные подсети** (по одной на AZ): балансировщик (ALB), NAT Gateway, bastion (лучше вообще без bastion — SSM Session Manager). Маршрут `0.0.0.0/0 → Internet Gateway`.
@@ -48,6 +49,7 @@ level: senior
 type: theory
 freq: 3
 tags: iam, безопасность
+theory: iam
 
 Сущности:
 - **Users** (долгоживущие креды — избегать для людей и машин), **Groups**, **Roles** (временные креды через **STS AssumeRole**).
@@ -68,6 +70,7 @@ level: senior
 type: theory
 freq: 3
 tags: dr, надёжность
+theory: reliability
 
 - **RPO** (Recovery Point Objective) — сколько данных допустимо потерять (насколько свежий бэкап нужен). RPO 1 час → бэкапы/репликация не реже раза в час.
 - **RTO** (Recovery Time Objective) — за какое время нужно восстановить сервис.
@@ -91,6 +94,7 @@ level: senior
 type: scenario
 freq: 3
 tags: finops, стоимость
+theory: finops
 
 1. **Видимость**: обязательные теги (команда, сервис, окружение), Cost Explorer/CUR, Kubecost/OpenCost для Kubernetes, бюджеты и аномалии (AWS Cost Anomaly Detection). Без атрибуции затрат оптимизировать нечего.
 2. **Убрать лишнее**: неиспользуемые ресурсы (неприкреплённые диски, старые снапшоты, простаивающие балансировщики, Elastic IP), выключать dev/stage ночью и в выходные.
@@ -108,6 +112,7 @@ level: senior
 type: design
 freq: 3
 tags: ha, надёжность
+theory: reliability
 
 - **Устранение единых точек отказа** на всех уровнях.
 - **Мульти-AZ**: экземпляры приложений в ≥2–3 зонах за балансировщиком, ASG/Kubernetes с topology spread, managed-БД с Multi-AZ (синхронная реплика и автоматический failover), кеш с репликами.
@@ -126,6 +131,7 @@ level: senior
 type: theory
 freq: 2
 tags: kubernetes, managed
+theory: compute, kubernetes/architecture
 
 **Managed**: провайдер управляет control plane (API-серверы, etcd, их HA, бэкапы, обновления), интеграции с IAM, балансировщиками, хранилищем; SLA. Вы отвечаете за ноды (или берёте managed node groups / Fargate / Autopilot), аддоны, приложения, обновление версий в окне поддержки.
 
@@ -141,6 +147,7 @@ level: middle
 type: theory
 freq: 2
 tags: serverless
+theory: compute
 
 **Serverless** (Lambda, Cloud Functions, Cloud Run, Fargate) — нет управления серверами, масштабирование до нуля, оплата за фактическое использование.
 
@@ -162,6 +169,7 @@ level: middle
 type: practice
 freq: 1
 tags: s3, хранение
+theory: storage
 
 - **Классы хранения**: Standard, Intelligent-Tiering (автоматически), Standard-IA и One Zone-IA (редкий доступ, плата за извлечение), Glacier Instant/Flexible/Deep Archive (архив, извлечение от миллисекунд до часов).
 - **Lifecycle-правила**: переход между классами по возрасту, удаление старых версий и незавершённых multipart-загрузок.
@@ -175,6 +183,7 @@ level: middle
 type: theory
 freq: 3
 tags: aws, основы
+theory: basics, compute
 
 **Регион** (region, например `eu-central-1` во Франкфурте) — географическая область с несколькими изолированными дата-центрами. Регионы независимы, данные сами по себе между ними не перемещаются (важно для законодательства о персональных данных). Выбор региона влияет на задержку до пользователей, цены и доступность сервисов.
 
@@ -198,6 +207,7 @@ level: middle
 type: theory
 freq: 3
 tags: aws, firewall, vpc
+theory: network, network/routing
 
 | | Security Group | Network ACL |
 |---|---|---|
@@ -222,6 +232,7 @@ level: middle
 type: theory
 freq: 3
 tags: yandex-cloud, российские-облака
+theory: providers, iam
 
 **Иерархия ресурсов:**
 - **Организация** (Yandex Cloud Organization) — пользователи, федерации с корпоративным SSO (SAML, Active Directory), группы;
@@ -258,6 +269,7 @@ level: middle
 type: theory
 freq: 2
 tags: российские-облака, vk-cloud, импортозамещение
+theory: providers
 
 **Основные провайдеры:**
 - **Yandex Cloud** — крупнейший по набору managed-сервисов (БД, Kafka, ClickHouse, Kubernetes, serverless, ML-сервисы и YandexGPT), развитый IAM и Terraform-провайдер.
@@ -283,6 +295,7 @@ level: senior
 type: scenario
 freq: 2
 tags: миграция, российские-облака
+theory: migration, providers
 
 **1. Инвентаризация и оценка:**
 - полный список ресурсов и зависимостей (Terraform state, AWS Config, теги), потоки данных между сервисами;
@@ -315,6 +328,7 @@ level: middle
 type: theory
 freq: 2
 tags: gcp
+theory: providers, iam, network
 
 **Иерархия ресурсов:**
 - **Organization** (привязана к домену Google Workspace или Cloud Identity) → **Folders** (подразделения, окружения) → **Projects** → ресурсы.
@@ -344,6 +358,7 @@ level: middle
 type: theory
 freq: 2
 tags: azure
+theory: providers, iam
 
 **Иерархия:**
 - **Microsoft Entra ID** (бывший Azure Active Directory) **tenant** — каталог пользователей и приложений организации;
@@ -374,6 +389,7 @@ level: senior
 type: design
 freq: 2
 tags: облака, сравнение
+theory: providers
 
 **Соответствие основных сервисов:**
 | Задача | AWS | GCP | Azure |
@@ -412,6 +428,7 @@ level: senior
 type: design
 freq: 2
 tags: landing-zone, aws-organizations, governance
+theory: landing-zone, iam
 
 **Зачем несколько аккаунтов** (проектов, подписок, облаков): аккаунт — самая сильная граница изоляции в облаке. Отдельные аккаунты ограничивают **радиус поражения** (ошибка или взлом в dev не затронет prod), разделяют **квоты и лимиты**, упрощают **учёт затрат** и права доступа.
 
@@ -447,6 +464,7 @@ level: middle
 type: theory
 freq: 2
 tags: vpc, privatelink, сеть
+theory: network, finops
 
 **Проблема:** приложения в приватных подсетях обращаются к сервисам облака (S3, ECR, Secrets Manager, SQS, STS) по **публичным** адресам. Трафик идёт через **NAT Gateway** — это стоит денег (плата за обработку каждого гигабайта), требует выхода в интернет и выглядит хуже с точки зрения безопасности.
 

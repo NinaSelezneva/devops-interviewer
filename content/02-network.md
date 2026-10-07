@@ -34,6 +34,7 @@ level: middle
 type: theory
 freq: 3
 tags: dns, http, tls
+theory: models, dns, tls, http
 
 Классический вопрос, где можно показать глубину. Основные шаги:
 
@@ -59,6 +60,7 @@ level: middle
 type: theory
 freq: 3
 tags: tcp, udp
+theory: tcp-udp
 
 | | TCP | UDP |
 |---|---|---|
@@ -81,6 +83,7 @@ level: middle
 type: theory
 freq: 3
 tags: dns
+theory: dns
 
 DNS — распределённая иерархическая база. Клиент (stub resolver) спрашивает **рекурсивный резолвер**, тот итеративно идёт: корень → TLD → авторитативный сервер зоны. Ответы кешируются на **TTL**.
 
@@ -106,6 +109,7 @@ level: senior
 type: theory
 freq: 2
 tags: http
+theory: http
 
 - **HTTP/1.1**: текстовый протокол, keep-alive, но один запрос за раз на соединение → **head-of-line blocking** на уровне приложения. Браузеры открывают 6 соединений на хост; отсюда старые оптимизации (спрайты, шардинг доменов).
 - **HTTP/2**: бинарный фрейминг, **мультиплексирование** множества потоков в одном TCP-соединении, сжатие заголовков HPACK, приоритеты, server push (фактически устарел). Проблема: HOL-блокировка переехала на уровень TCP — потеря одного пакета тормозит все потоки. Основа **gRPC**.
@@ -118,6 +122,7 @@ level: senior
 type: theory
 freq: 3
 tags: tls, безопасность
+theory: tls
 
 **TLS** обеспечивает конфиденциальность (шифрование), целостность и аутентификацию сервера.
 
@@ -138,6 +143,7 @@ level: senior
 type: theory
 freq: 3
 tags: балансировка
+theory: load-balancing
 
 **L4** (транспортный уровень) — балансирует TCP/UDP-соединения по IP и порту, не заглядывая в содержимое. Быстро, дёшево, поддерживает любые протоколы, может сохранять IP клиента. Примеры: AWS NLB, IPVS, HAProxy в режиме tcp, MetalLB.
 
@@ -152,6 +158,7 @@ level: senior
 type: scenario
 freq: 3
 tags: http, nginx, траблшутинг
+theory: nginx, http, troubleshooting
 
 - **502 Bad Gateway** — прокси получил **некорректный ответ** или вообще не смог получить ответ от апстрима: апстрим не слушает порт (connection refused), упал во время запроса, сбросил соединение, превышен размер заголовков ответа, рассинхрон keep-alive (апстрим закрыл соединение раньше, чем прокси попытался его переиспользовать).
 - **504 Gateway Timeout** — апстрим не ответил за `proxy_read_timeout` (по умолчанию 60с): медленный запрос, зависшие воркеры, медленная БД, исчерпан пул соединений.
@@ -169,6 +176,7 @@ level: senior
 type: scenario
 freq: 3
 tags: траблшутинг, сеть
+theory: troubleshooting, tcp-udp
 
 Идти **снизу вверх по стеку**:
 
@@ -190,6 +198,7 @@ level: middle
 type: practice
 freq: 2
 tags: ip, cidr
+theory: ip-addressing
 
 **CIDR** — запись адреса с длиной префикса: `/16` означает, что первые 16 бит — сеть, оставшиеся 16 — хосты → 65 536 адресов. `/24` — 256 адресов (в AWS из каждой подсети резервируется 5).
 
@@ -209,6 +218,7 @@ level: senior
 type: theory
 freq: 2
 tags: nat, iptables
+theory: routing
 
 **NAT** — подмена адресов в пакетах. **SNAT/masquerade** — исходящий трафик из приватной сети выходит под одним публичным IP (домашний роутер, NAT Gateway в облаке). **DNAT** — входящий трафик на публичный адрес перенаправляется во внутреннюю сеть (port forwarding, Kubernetes Service через kube-proxy в режиме iptables).
 
@@ -225,6 +235,7 @@ level: senior
 type: scenario
 freq: 3
 tags: dns, траблшутинг
+theory: dns, troubleshooting
 
 Важно понимать, **в каком порядке** система ищет имя, и что разные утилиты идут разными путями.
 
@@ -259,6 +270,7 @@ level: middle
 type: theory
 freq: 2
 tags: dhcp
+theory: ip-addressing
 
 **DHCP** (Dynamic Host Configuration Protocol) автоматически выдаёт клиенту IP-адрес и сетевые параметры: маску, шлюз (option 3), DNS-серверы (option 6), домен поиска, NTP, MTU и др. Работает поверх **UDP**: сервер слушает порт **67**, клиент — **68**. Прикладной уровень (L7), хотя обслуживает настройку L3.
 
@@ -289,6 +301,7 @@ level: middle
 type: theory
 freq: 2
 tags: tcp, сокеты
+theory: tcp-udp
 
 - **Порт** — 16-битное число (0–65535) в заголовке TCP/UDP, идентифицирующее приложение на хосте. Это **часть адреса**, а не объект. Диапазоны: 0–1023 — системные (нужны root или `CAP_NET_BIND_SERVICE`), 1024–49151 — зарегистрированные, эфемерные для исходящих соединений — в Linux `net.ipv4.ip_local_port_range` (по умолчанию 32768–60999).
 - **Сокет** — **объект ОС** (файловый дескриптор), конечная точка сетевого взаимодействия, через который процесс читает и пишет данные. Создаётся системным вызовом `socket()`, далее `bind()`, `listen()`/`accept()` на сервере или `connect()` на клиенте.
@@ -309,6 +322,7 @@ level: middle
 type: theory
 freq: 3
 tags: криптография, tls
+theory: tls
 
 **Симметричное шифрование** — **один общий ключ** для шифрования и расшифровки.
 - Алгоритмы: **AES** (AES-128/256 в режиме GCM), **ChaCha20-Poly1305**; устаревшие — DES, 3DES, RC4.
@@ -334,6 +348,7 @@ level: senior
 type: practice
 freq: 2
 tags: tcpdump, траблшутинг
+theory: troubleshooting
 
 **tcpdump** — основной инструмент на серверах:
 ```bash
@@ -369,6 +384,7 @@ level: senior
 type: theory
 freq: 2
 tags: vlan, vxlan, overlay
+theory: l2
 
 **VLAN** (IEEE 802.1Q) — логическое разделение **одной физической L2-сети** на изолированные широковещательные домены.
 - В Ethernet-кадр добавляется 4-байтовый тег с **VLAN ID** (12 бит → до **4094** VLAN).
@@ -395,6 +411,7 @@ level: senior
 type: design
 freq: 2
 tags: vpn, ipsec, wireguard
+theory: ssh-vpn, routing
 
 **Сначала уточнить задачу.** Есть два основных сценария:
 - **Site-to-site** — связать сети целиком: офис ↔ ЦОД, on-prem ↔ облачная VPC, облако ↔ облако. Маршрутизаторы или шлюзы держат постоянный туннель, пользователи ничего не настраивают.
@@ -441,6 +458,7 @@ level: middle
 type: theory
 freq: 3
 tags: osi, основы
+theory: models
 
 **OSI** — эталонная 7-уровневая модель сетевого взаимодействия. На практике используется более простой стек **TCP/IP** (4 уровня), но уровни OSI — общий язык («проблема на L3», «балансировщик L7»).
 
@@ -472,6 +490,7 @@ level: middle
 type: theory
 freq: 3
 tags: http
+theory: http
 
 **Методы:**
 | Метод | Назначение | Безопасный | Идемпотентный |
@@ -505,6 +524,7 @@ level: middle
 type: practice
 freq: 3
 tags: nginx, reverse-proxy
+theory: nginx
 
 ```nginx
 upstream api_backend {
@@ -569,6 +589,7 @@ level: middle
 type: practice
 freq: 3
 tags: ssh
+theory: ssh-vpn
 
 **Аутентификация по ключу:**
 1. Генерируем пару: `ssh-keygen -t ed25519 -C "alice@laptop"` → `~/.ssh/id_ed25519` (закрытый, никому не передавать) и `id_ed25519.pub` (открытый).
@@ -604,6 +625,7 @@ level: middle
 type: practice
 freq: 2
 tags: ssh, туннели
+theory: ssh-vpn
 
 SSH умеет пробрасывать TCP-соединения через зашифрованный канал.
 
@@ -635,6 +657,7 @@ level: middle
 type: practice
 freq: 2
 tags: nginx, rate-limiting
+theory: nginx
 
 nginx использует алгоритм **leaky bucket** (протекающее ведро): запросы обрабатываются с заданной скоростью, всплески можно буферизовать.
 
@@ -680,6 +703,7 @@ level: middle
 type: practice
 freq: 2
 tags: nginx, кеширование
+theory: nginx
 
 **Кеширование проксируемых ответов** снимает нагрузку с бэкенда:
 ```nginx
@@ -725,6 +749,7 @@ level: middle
 type: theory
 freq: 2
 tags: nginx, балансировка
+theory: load-balancing, nginx
 
 ```nginx
 upstream api {
@@ -758,6 +783,7 @@ level: senior
 type: practice
 freq: 2
 tags: nginx, производительность
+theory: nginx, tcp-udp
 
 **Процессы и соединения:**
 ```nginx
@@ -795,6 +821,7 @@ level: middle
 type: scenario
 freq: 2
 tags: nginx, коды-ответа
+theory: nginx, http
 
 **499 Client Closed Request** — нестандартный код nginx: **клиент закрыл соединение**, не дождавшись ответа. Ответ клиенту не отправлен, в лог записан 499.
 Причины:
@@ -816,6 +843,7 @@ level: middle
 type: theory
 freq: 2
 tags: arp, l2
+theory: l2
 
 **ARP** (Address Resolution Protocol) сопоставляет **IP-адрес → MAC-адрес** в пределах одного L2-сегмента. Нужен потому, что Ethernet-кадр адресуется MAC-адресом, а приложения знают только IP.
 
@@ -844,6 +872,7 @@ level: middle
 type: theory
 freq: 2
 tags: ipv6
+theory: ip-addressing
 
 **Зачем:** адреса IPv4 исчерпаны — облака берут плату за публичные IPv4, мобильные операторы и крупные сервисы работают по IPv6, большие Kubernetes-кластеры упираются в размер приватных IPv4-диапазонов.
 
@@ -870,6 +899,7 @@ level: senior
 type: theory
 freq: 1
 tags: bgp, маршрутизация
+theory: routing
 
 **BGP** (Border Gateway Protocol) — протокол обмена маршрутами между **автономными системами** (AS) — сетями провайдеров, облаков и крупных компаний. По сути, это протокол, на котором держится маршрутизация интернета: каждая AS анонсирует соседям, какие префиксы (IP-диапазоны) через неё доступны, и выбирает лучшие пути по атрибутам (длина пути AS_PATH, local preference, MED).
 
@@ -892,6 +922,7 @@ level: middle
 type: theory
 freq: 2
 tags: cdn, кеширование
+theory: load-balancing, http
 
 **CDN** (Content Delivery Network) — распределённая сеть серверов (**edge**, точек присутствия — PoP) по всему миру. Пользователь получает контент с ближайшего узла, а не с вашего сервера (**origin**).
 
@@ -924,6 +955,7 @@ level: middle
 type: practice
 freq: 2
 tags: websocket, nginx, балансировка
+theory: load-balancing, nginx
 
 **WebSocket** начинается как обычный HTTP-запрос с заголовками `Upgrade: websocket` и `Connection: Upgrade`. Сервер отвечает `101 Switching Protocols`, и дальше по тому же TCP-соединению идёт двусторонний обмен сообщениями.
 
@@ -963,6 +995,7 @@ level: middle
 type: practice
 freq: 2
 tags: traceroute, mtr, траблшутинг
+theory: troubleshooting, routing
 
 **traceroute** показывает маршрут пакетов до узла. Принцип основан на поле **TTL** (Time To Live) в IP-заголовке: каждый маршрутизатор уменьшает TTL на 1 и при достижении 0 отбрасывает пакет и отправляет отправителю ICMP **Time Exceeded**. traceroute отправляет пакеты с TTL = 1, 2, 3… и по ответам узнаёт адреса маршрутизаторов на каждом шаге (hop) и время ответа.
 

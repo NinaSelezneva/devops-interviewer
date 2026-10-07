@@ -35,6 +35,7 @@ level: middle
 type: theory
 freq: 3
 tags: state
+theory: state
 
 **State** — сопоставление ресурсов из кода с реальными объектами (ID в облаке) плюс атрибуты и зависимости. Без него Terraform не знает, какой реальный ресурс соответствует `aws_instance.web`, и не может вычислить изменения или удалить ресурс, исчезнувший из кода. Также state ускоряет plan (кеш атрибутов).
 
@@ -51,6 +52,7 @@ level: senior
 type: scenario
 freq: 3
 tags: drift
+theory: refactoring, state
 
 **Дрейф** — расхождение реальной инфраструктуры с кодом/state: кто-то поменял security group в консоли, автоскейлер изменил размер, хотфикс во время инцидента.
 
@@ -71,6 +73,7 @@ level: senior
 type: design
 freq: 3
 tags: структура, модули
+theory: modules-structure
 
 Варианты:
 
@@ -101,6 +104,7 @@ level: middle
 type: practice
 freq: 2
 tags: hcl
+theory: hcl
 
 - **count** — создаёт N экземпляров с адресами по индексу: `aws_instance.web[0]`, `[1]`, `[2]`.
 - **for_each** — по map или set строк, адреса по ключу: `aws_instance.web["api"]`.
@@ -123,6 +127,7 @@ level: senior
 type: practice
 freq: 2
 tags: рефакторинг, state
+theory: refactoring
 
 Цель — чтобы plan показывал **0 изменений** реальных ресурсов.
 
@@ -145,6 +150,7 @@ level: senior
 type: practice
 freq: 3
 tags: секреты, безопасность
+theory: secrets
 
 Проблема: значения попадают в **state** и могут попасть в **plan/логи CI**.
 
@@ -162,6 +168,7 @@ level: senior
 type: practice
 freq: 2
 tags: тестирование
+theory: testing-lifecycle
 
 Пирамида проверок:
 1. **Статика** (на каждый коммит, секунды): `terraform fmt -check`, `validate`, **tflint** (ошибки провайдера, неиспользуемые переменные), **Checkov / Trivy (tfsec) / KICS** — безопасность (открытые SG, незашифрованные бакеты).
@@ -176,6 +183,7 @@ level: senior
 type: theory
 freq: 2
 tags: инструменты
+theory: concepts
 
 - **Terraform/OpenTofu** — провижининг инфраструктуры (облака, сети, DNS, SaaS), декларативный, state, огромная экосистема провайдеров.
 - **Ansible** — конфигурирование ОС и приложений на серверах, оркестрация процедур (rolling-обновления, раскатка конфигов), без агента, без state. Может создавать облачные ресурсы, но слабее в управлении жизненным циклом и удалении.
@@ -190,6 +198,7 @@ level: senior
 type: scenario
 freq: 2
 tags: траблшутинг, state
+theory: state
 
 **Apply упал посередине**: Terraform не транзакционен — часть ресурсов создана. State при этом обновляется по мере создания ресурсов, поэтому обычно достаточно:
 1. разобраться с причиной (лимиты квот, права IAM, конфликт имён, таймаут API);
@@ -209,6 +218,7 @@ level: middle
 type: theory
 freq: 3
 tags: hcl, основы
+theory: terraform-basics
 
 ```hcl
 terraform {
@@ -275,6 +285,7 @@ level: middle
 type: practice
 freq: 2
 tags: variables
+theory: hcl
 
 **Способы** (от низшего приоритета к высшему, последнее значение побеждает):
 1. `default` в блоке `variable`;
@@ -324,6 +335,7 @@ level: senior
 type: theory
 freq: 2
 tags: terragrunt, структура
+theory: modules-structure
 
 **Terragrunt** — обёртка над Terraform/OpenTofu, которая решает проблему **повторяющегося кода** при множестве окружений и компонентов.
 
@@ -376,6 +388,7 @@ level: middle
 type: practice
 freq: 2
 tags: packer, образы, immutable
+theory: concepts
 
 **Packer** (HashiCorp) — сборка **образов машин** из кода: AMI в AWS, образы GCP и Azure, Yandex Compute Image, шаблоны VMware и Proxmox, образы Vagrant, а также Docker-образы. Один шаблон может собирать образы для нескольких платформ.
 
@@ -431,6 +444,7 @@ level: senior
 type: practice
 freq: 1
 tags: terraform, обновления
+theory: testing-lifecycle
 
 **Закрепление версий:**
 ```hcl

@@ -6,6 +6,17 @@
   const ALL = TOPICS.flatMap((t) => t.questions);
   const BY_ID = new Map(ALL.map((q) => [q.id, q]));
   const TOPIC = new Map(TOPICS.map((t) => [t.id, t]));
+  // Подробная теория: главы по темам и обратные ссылки «глава → вопросы»
+  const THEORY = new Map((window.DATA.theory || []).map((th) => [th.topic, th]));
+  const CHAPTER = new Map([...THEORY.values()].flatMap((th) =>
+    th.chapters.map((ch, index) => [ch.id, { ...ch, topic: th.topic, index }])));
+  const CHAPTER_QS = new Map();
+  for (const q of ALL) {
+    for (const ref of q.theory || []) {
+      if (!CHAPTER_QS.has(ref)) CHAPTER_QS.set(ref, []);
+      CHAPTER_QS.get(ref).push(q);
+    }
+  }
   const LEVELS = { middle: 'Middle', senior: 'Senior', lead: 'Lead' };
   const TYPES = { theory: 'Теория', practice: 'Практика', scenario: 'Кейс', design: 'Дизайн', behavioral: 'Поведенческий' };
   const STATUSES = { new: 'Новый', learning: 'Изучаю', known: 'Знаю' };
@@ -102,10 +113,34 @@
 
   const taskBlock = (q) => (q.p ? `<div class="task prose">${q.p}</div>` : '');
 
-  function questionItem(q, withTopic = false) {
+  // Главы теории, связанные с вопросом. Текст главы подставляется при первом раскрытии,
+  // чтобы списки из десятков вопросов не тащили в DOM по копии каждой главы.
+  function theoryRefs(q, skipChapter = null) {
+    const chs = (q.theory || []).filter((id) => id !== skipChapter).map((id) => CHAPTER.get(id)).filter(Boolean);
+    if (!chs.length) return '';
+    return `<div class="theory-refs"><div class="theory-refs-head">📖 Разобраться подробнее</div>
+      ${chs.map((ch) => `<details class="theory-ref" data-chapter="${ch.id}">
+        <summary><span class="chev">▸</span>${esc(TOPIC.get(ch.topic).icon)} ${esc(ch.title)}</summary>
+        <div class="theory-ref-body"></div>
+      </details>`).join('')}</div>`;
+  }
+  // toggle не всплывает, поэтому слушаем на фазе перехвата
+  document.addEventListener('toggle', (e) => {
+    const det = e.target;
+    if (!(det instanceof HTMLDetailsElement) || !det.open || !det.dataset.chapter) return;
+    const body = det.querySelector('.theory-ref-body');
+    if (body.childElementCount) return;
+    const ch = CHAPTER.get(det.dataset.chapter);
+    // Внутри карточки ссылки открываем в новой вкладке, чтобы не прерывать тренировку или собеседование
+    const html = ch.html.replace(/<a href="#\//g, '<a target="_blank" rel="noopener" href="#/');
+    body.innerHTML = `<div class="prose">${html}</div>
+      <p class="hint"><a href="#/theory/${ch.id}" target="_blank" rel="noopener">Открыть главу в разделе «Теория» ↗</a></p>`;
+  }, true);
+
+  function questionItem(q, withTopic = false, skipChapter = null) {
     return `<details class="card qitem" data-q="${q.id}">
       <summary><span class="chev">▸</span><span class="qtext">${esc(q.q)}<br>${badges(q, withTopic)}</span></summary>
-      <div class="qbody">${taskBlock(q)}<div class="prose">${q.a}</div>${rateButtons(q.id)}</div>
+      <div class="qbody">${taskBlock(q)}<div class="prose">${q.a}</div>${theoryRefs(q, skipChapter)}${rateButtons(q.id)}</div>
     </details>`;
   }
 
@@ -198,8 +233,9 @@
       <div class="actions">
         <a class="btn primary" href="#/train?topics=${t.id}&autostart=1">▶ Тренировать тему</a>
         <a class="btn" href="#/interview?topics=${t.id}">🎤 Собеседование по теме</a>
+        ${THEORY.has(t.id) ? `<a class="btn" href="#/theory/${t.id}">📖 Подробная теория</a>` : ''}
       </div>
-      <details class="card theory" open><summary>📘 Теория и шпаргалка</summary><div class="prose">${t.theory}</div></details>
+      <details class="card theory" open><summary>📘 Кратко: ключевые концепции и шпаргалка</summary><div class="prose">${t.theory}</div></details>
       <h2>Вопросы (${t.questions.length})</h2>
       <div class="filters" id="filters">
         ${usedLevels.map((l) => `<button class="chip" data-f="level" data-v="${l}">${LEVELS[l]}</button>`).join('')}
@@ -269,6 +305,10 @@
     const selected = pre.size ? pre : new Set(TOPICS.map((t) => t.id));
     const mode = params.get('mode') || 'smart';
     const level = params.get('level') || savedLevel();
+    if (params.get('ids')) {
+      runTraining(shuffle(params.get('ids').split(',').map((id) => BY_ID.get(id)).filter(Boolean)));
+      return;
+    }
     if (params.get('autostart')) { runTraining(buildQueue([...selected], mode, 20, level)); return; }
     app.innerHTML = `
       <h1>Тренировка карточками</h1>
@@ -336,7 +376,7 @@
       document.activeElement.blur();
       document.getElementById('reveal').disabled = true;
       const box = document.getElementById('answer');
-      box.innerHTML = `<div class="answer prose">${current.a}</div>${rateButtons(current.id).replace('data-rate', 'data-session="1" data-rate')}`;
+      box.innerHTML = `<div class="answer prose">${current.a}</div>${theoryRefs(current)}${rateButtons(current.id).replace('data-rate', 'data-session="1" data-rate')}`;
       box.querySelector('.rate').addEventListener('click', (e) => {
         const b = e.target.closest('[data-grade]');
         if (b) grade(Number(b.dataset.grade));
@@ -465,7 +505,7 @@
       document.getElementById('draft').readOnly = true;
       const box = document.getElementById('answer');
       box.innerHTML = `<p class="hint">Время ответа: ${fmtTime(spent)}. Сравните с эталоном и оцените себя.</p>
-        <div class="answer prose">${q.a}</div>${rateButtons(q.id).replace('data-rate', 'data-session="1" data-rate')}`;
+        <div class="answer prose">${q.a}</div>${theoryRefs(q)}${rateButtons(q.id).replace('data-rate', 'data-session="1" data-rate')}`;
       box.querySelector('.rate').addEventListener('click', (e) => {
         const b = e.target.closest('[data-grade]');
         if (b) grade(Number(b.dataset.grade));
@@ -512,28 +552,107 @@
     next();
   }
 
+  // ---------- Экраны: подробная теория ----------
+  const chapterQs = (id) => CHAPTER_QS.get(id) || [];
+  const trainLink = (qs) => `#/train?ids=${qs.map((q) => q.id).join(',')}`;
+
+  function chapterToc(th) {
+    return `<ol class="toc">${th.chapters.map((ch) => {
+      const n = chapterQs(ch.id).length;
+      return `<li><a href="#/theory/${ch.id}">${esc(ch.title)}</a>
+        ${n ? `<span class="hint">· ${n} ${plural(n, 'вопрос', 'вопроса', 'вопросов')}</span>` : ''}</li>`;
+    }).join('')}</ol>`;
+  }
+
+  function viewTheoryIndex() {
+    const withTheory = TOPICS.filter((t) => THEORY.has(t.id));
+    const without = TOPICS.filter((t) => !THEORY.has(t.id));
+    app.innerHTML = `
+      <h1>Теория</h1>
+      <p class="lead">Подробные главы, которые читаются по порядку: от того, как всё устроено, к практике и диагностике.
+        В карточках вопросов есть блок «📖 Разобраться подробнее» со ссылками на эти главы, а в конце каждой главы — её вопросы для тренировки.</p>
+      ${withTheory.map((t) => {
+        const th = THEORY.get(t.id);
+        return `<div class="card theory-topic">
+          <h2><a href="#/theory/${t.id}">${t.icon} ${esc(t.title)}</a></h2>
+          ${chapterToc(th)}
+        </div>`;
+      }).join('')}
+      ${without.length ? `<p class="hint">Для остальных тем пока есть краткая теория и шпаргалка на странице темы:
+        ${without.map((t) => `<a href="#/topic/${t.id}">${t.icon} ${esc(t.title)}</a>`).join(' · ')}</p>` : ''}`;
+  }
+
+  function viewTheoryTopic(topicId) {
+    const t = TOPIC.get(topicId);
+    const th = THEORY.get(topicId);
+    if (!t || !th) { app.innerHTML = '<div class="empty">Теория по этой теме пока не написана. <a href="#/theory">Ко всей теории</a></div>'; return; }
+    const first = th.chapters[0];
+    app.innerHTML = `
+      <p><a href="#/theory">← Вся теория</a></p>
+      <h1>${t.icon} ${esc(t.title)}: теория</h1>
+      <div class="prose lead-prose">${th.intro}</div>
+      <div class="actions">
+        ${first ? `<a class="btn primary" href="#/theory/${first.id}">📖 Начать с главы 1</a>` : ''}
+        <a class="btn" href="#/topic/${t.id}">Вопросы темы (${t.questions.length})</a>
+      </div>
+      <h2>Оглавление</h2>
+      <div class="card">${chapterToc(th)}</div>`;
+  }
+
+  function viewChapter(id) {
+    const ch = CHAPTER.get(id);
+    if (!ch) { app.innerHTML = '<div class="empty">Глава не найдена. <a href="#/theory">Ко всей теории</a></div>'; return; }
+    const t = TOPIC.get(ch.topic);
+    const chapters = THEORY.get(ch.topic).chapters;
+    const prev = chapters[ch.index - 1];
+    const next = chapters[ch.index + 1];
+    const qs = chapterQs(id);
+    app.innerHTML = `
+      <p class="crumbs"><a href="#/theory">Теория</a> / <a href="#/theory/${t.id}">${t.icon} ${esc(t.title)}</a> · глава ${ch.index + 1} из ${chapters.length}</p>
+      <article class="card chapter">
+        <h1>${esc(ch.title)}</h1>
+        <div class="prose">${ch.html}</div>
+      </article>
+      ${qs.length ? `<h2>Вопросы по этой главе (${qs.length})</h2>
+        <div class="actions"><a class="btn primary" href="${trainLink(qs)}">▶ Потренировать вопросы главы</a></div>
+        <div class="qlist" id="qlist">${qs.map((q) => questionItem(q, q.topic !== ch.topic, id)).join('')}</div>` : ''}
+      <nav class="pager">
+        ${prev ? `<a class="card" href="#/theory/${prev.id}"><span class="hint">← Предыдущая</span>${esc(prev.title)}</a>` : '<span></span>'}
+        ${next ? `<a class="card next" href="#/theory/${next.id}"><span class="hint">Следующая →</span>${esc(next.title)}</a>` : '<span></span>'}
+      </nav>`;
+    const list = document.getElementById('qlist');
+    if (list) bindListRating(list);
+  }
+
   // ---------- Экран: поиск ----------
   const searchIndex = ALL.map((q) => ({ q, text: `${q.q} ${q.tags.join(' ')} ${stripTags(q.p || '')} ${stripTags(q.a)}`.toLowerCase() }));
+  const chapterIndex = [...CHAPTER.values()].map((ch) => ({ ch, text: `${ch.title} ${stripTags(ch.html)}`.toLowerCase() }));
   function viewSearch(params) {
     const initial = params.get('q') || '';
     app.innerHTML = `
       <h1>Поиск по вопросам и ответам</h1>
       <p><input type="search" id="search" placeholder="Например: TIME_WAIT, etcd, terraform state, PromQL…" value="${esc(initial)}" autofocus></p>
       <p class="hint" id="search-info"></p>
+      <div id="chapters"></div>
       <div class="qlist" id="qlist"></div>`;
     const input = document.getElementById('search');
     const list = document.getElementById('qlist');
     const info = document.getElementById('search-info');
+    const chaptersBox = document.getElementById('chapters');
     const run = () => {
       const terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
       history.replaceState(null, '', `#/search${terms.length ? `?q=${encodeURIComponent(input.value)}` : ''}`);
-      if (!terms.length) { list.innerHTML = ''; info.textContent = `Всего вопросов: ${ALL.length}`; return; }
+      if (!terms.length) { list.innerHTML = ''; chaptersBox.innerHTML = ''; info.textContent = `Всего вопросов: ${ALL.length}`; return; }
       const found = searchIndex
         .filter(({ text }) => terms.every((t) => text.includes(t)))
         .map(({ q }) => ({ q, score: terms.filter((t) => q.q.toLowerCase().includes(t)).length * 10 + q.freq }))
         .sort((a, b) => b.score - a.score);
-      info.textContent = `Найдено: ${found.length}`;
+      const chs = chapterIndex.filter(({ text }) => terms.every((t) => text.includes(t)))
+        .sort((a, b) => terms.filter((t) => b.ch.title.toLowerCase().includes(t)).length - terms.filter((t) => a.ch.title.toLowerCase().includes(t)).length);
+      info.textContent = `Найдено вопросов: ${found.length}${chs.length ? `, глав теории: ${chs.length}` : ''}`;
       const re = new RegExp(`(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi');
+      chaptersBox.innerHTML = chs.length ? `<div class="card search-chapters"><strong>📖 Главы теории</strong><ul>${chs.slice(0, 10).map(({ ch }) =>
+        `<li><a href="#/theory/${ch.id}">${TOPIC.get(ch.topic).icon} ${esc(ch.title).replace(re, '<mark>$1</mark>')}</a></li>`).join('')}</ul></div>` : '';
       list.innerHTML = found.slice(0, 60).map(({ q }) => questionItem(q, true)
         .replace(`<span class="qtext">${esc(q.q)}`, `<span class="qtext">${esc(q.q).replace(re, '<mark>$1</mark>')}`)).join('');
     };
@@ -620,13 +739,20 @@
     const section = parts[0] || 'home';
     document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === section));
     if (section === 'topic') viewTopic(parts[1]);
+    else if (section === 'theory') {
+      if (parts[2]) viewChapter(`${parts[1]}/${parts[2]}`);
+      else if (parts[1]) viewTheoryTopic(parts[1]);
+      else viewTheoryIndex();
+    }
     else if (section === 'train') viewTrainSetup(params);
     else if (section === 'interview') viewInterviewSetup(params);
     else if (section === 'search') viewSearch(params);
     else viewHome();
     renderFooter();
     window.scrollTo(0, 0);
-    trackView(section, section === 'topic' && TOPIC.has(parts[1]) ? parts[1] : null);
+    const viewId = section === 'topic' && TOPIC.has(parts[1]) ? parts[1]
+      : section === 'theory' && (CHAPTER.has(parts.slice(1, 3).join('/')) || THEORY.has(parts[1])) ? parts.slice(1, 3).join('/') : null;
+    trackView(section, viewId);
   }
   window.addEventListener('hashchange', route);
   // Ссылка на текущий адрес (например, «Завершить» внутри сессии) не вызывает hashchange — перерисовываем вручную

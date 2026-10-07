@@ -34,6 +34,7 @@ level: middle
 type: theory
 freq: 3
 tags: prometheus
+theory: prometheus
 
 Компоненты:
 - **Prometheus server**: обнаружение целей (service discovery: Kubernetes, Consul, файлы), **scrape** эндпоинтов `/metrics` по HTTP с интервалом, хранение в локальной TSDB (блоки по 2 часа, WAL), вычисление recording и alerting rules, PromQL.
@@ -52,6 +53,7 @@ level: senior
 type: practice
 freq: 3
 tags: promql
+theory: metrics-promql
 
 Типы:
 - **Counter** — только растёт (сбрасывается при рестарте): число запросов, ошибок. Смотреть всегда через `rate()`/`increase()`.
@@ -83,6 +85,7 @@ level: senior
 type: theory
 freq: 3
 tags: prometheus, масштабирование
+theory: cardinality-scaling
 
 **Кардинальность** — количество уникальных временных рядов = произведение уникальных значений всех лейблов метрики. Каждый ряд занимает память в Prometheus (head block) и место на диске.
 
@@ -100,6 +103,7 @@ level: senior
 type: practice
 freq: 3
 tags: алертинг, slo
+theory: alerting, slo
 
 Принципы:
 - **Алертить на симптомы, а не на причины**: «пользователи получают ошибки / выросла латентность» (нарушение SLO), а не «CPU 80%». Высокий CPU без влияния на пользователя — не повод будить человека.
@@ -121,6 +125,7 @@ level: senior
 type: design
 freq: 3
 tags: slo, sre
+theory: slo
 
 1. **Определить пользовательские пути** (critical user journeys): открыть каталог, оформить заказ.
 2. **Выбрать SLI** — отношение «хороших событий» к «всем событиям», измеряемое как можно ближе к пользователю (балансировщик, а лучше — RUM/синтетика):
@@ -142,6 +147,7 @@ level: senior
 type: design
 freq: 2
 tags: логирование
+theory: logging
 
 Архитектура: приложения пишут **структурированные логи (JSON) в stdout** → агент на ноде (Fluent Bit, Vector, Promtail/Alloy, Filebeat) собирает, обогащает метаданными (pod, namespace, node), фильтрует → буфер (Kafka при больших объёмах) → хранилище → интерфейс (Kibana, Grafana).
 
@@ -158,6 +164,7 @@ level: senior
 type: theory
 freq: 2
 tags: трейсинг, opentelemetry
+theory: tracing
 
 **Трейс** — дерево **спанов**, описывающее путь одного запроса через сервисы; спан — операция с началом, длительностью, атрибутами и статусом. Контекст (trace_id, span_id) передаётся между сервисами в заголовках (W3C `traceparent`).
 
@@ -175,6 +182,7 @@ level: senior
 type: practice
 freq: 1
 tags: надёжность, мониторинг
+theory: cardinality-scaling, alerting
 
 - **Dead man's switch / Watchdog**: всегда активный алерт (`vector(1)`), который отправляется во внешний сервис (Healthchecks.io, PagerDuty heartbeat, Opsgenie). Если алерты перестали приходить — внешний сервис поднимает тревогу.
 - **HA-пары Prometheus**: две реплики собирают одни и те же цели, Alertmanager в кластере (gossip) дедуплицирует алерты.
@@ -187,6 +195,7 @@ level: middle
 type: theory
 freq: 3
 tags: метрики, golden-signals, red, use
+theory: pillars
 
 **Четыре золотых сигнала** (Google SRE Book) — минимальный набор метрик для любого сервиса, обращённого к пользователю:
 
@@ -226,6 +235,7 @@ level: senior
 type: practice
 freq: 3
 tags: метрики, логирование, filebeat, опыт
+theory: logging, prometheus
 
 Это вопрос **про ваш опыт**: интервьюер ждёт связной рассказ об архитектуре, причинах выбора, масштабе и проблемах. Структура хорошего ответа:
 
@@ -269,6 +279,7 @@ level: middle
 type: practice
 freq: 3
 tags: prometheus, exporter
+theory: prometheus
 
 **Exporter** — программа, которая собирает метрики из системы, не умеющей отдавать их в формате Prometheus, и публикует их на HTTP-эндпоинте `/metrics`:
 - **node_exporter** (порт 9100) — CPU, память, диски, сеть хоста;
@@ -322,6 +333,7 @@ level: middle
 type: practice
 freq: 2
 tags: grafana, алертинг
+theory: alerting
 
 **Grafana** — визуализация и алертинг поверх разных источников данных (**data sources**): Prometheus, Loki, Elasticsearch, PostgreSQL, ClickHouse, облачные мониторинги.
 
@@ -365,6 +377,7 @@ level: middle
 type: practice
 freq: 2
 tags: loki, logql, логирование
+theory: logging
 
 **Loki** (Grafana Labs) — система хранения логов, устроенная «как Prometheus, только для логов»: индексируются только **метки** (labels), а сами строки хранятся сжатыми чанками в объектном хранилище (S3, GCS, MinIO). Поэтому Loki дешевле и проще в эксплуатации, чем Elasticsearch, но поиск по содержимому — это перебор строк в выбранных потоках.
 
@@ -406,6 +419,7 @@ level: senior
 type: design
 freq: 2
 tags: prometheus, thanos, victoriametrics
+theory: cardinality-scaling
 
 **Ограничения одиночного Prometheus:**
 - локальная TSDB: объём ограничен диском одного сервера, обычно хранят 2–4 недели;
@@ -438,6 +452,7 @@ level: senior
 type: practice
 freq: 2
 tags: on-call, инциденты
+theory: oncall
 
 **Организация:**
 - **ротация** — минимум 5–8 человек в графике (чтобы дежурство выпадало не чаще раза в 1–2 месяца), первичный и вторичный дежурный, понятная эскалация (кто следующий, если первичный не ответил за 5–15 минут);
@@ -464,6 +479,7 @@ level: middle
 type: practice
 freq: 2
 tags: синтетика, blackbox, мониторинг
+theory: pillars, prometheus
 
 **Мониторинг «изнутри» (white-box)** — метрики, которые отдают сами сервисы и инфраструктура: RPS, ошибки, латентность, ресурсы. Он объясняет, **почему** что-то происходит, но может не заметить проблему, которую видит пользователь: сломан DNS, истёк сертификат, CDN отдаёт ошибку, недоступен балансировщик, сервис «зелёный», но отдаёт пустую страницу. Если упал весь сервис вместе с метриками, внутренний мониторинг просто замолчит.
 

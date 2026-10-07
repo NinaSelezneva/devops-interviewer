@@ -27,6 +27,7 @@ level: senior
 type: design
 freq: 3
 tags: секреты, vault
+theory: secrets, vault
 
 Требования: централизованное хранение, шифрование, аудит доступа, ротация, минимальные права, отсутствие секретов в Git/образах/логах.
 
@@ -48,6 +49,7 @@ level: senior
 type: scenario
 freq: 2
 tags: инцидент
+theory: secrets
 
 Порядок важен: **сначала отозвать**, потом разбираться. Публичные репозитории сканируются ботами за минуты.
 
@@ -63,6 +65,7 @@ level: senior
 type: practice
 freq: 3
 tags: kubernetes, безопасность
+theory: kubernetes-security, kubernetes/security
 
 **Control plane и доступ**
 - API-сервер не публичен (или ограничен по IP), аутентификация через OIDC/SSO, RBAC по принципу наименьших привилегий, отдельные кластеры или жёсткая изоляция для разных уровней доверия.
@@ -90,6 +93,7 @@ level: senior
 type: theory
 freq: 2
 tags: supply-chain
+theory: devsecops, cicd/security
 
 Атаки на цепочку поставок компрометируют не ваш код, а то, **из чего и чем он собирается**: зависимости (event-stream, xz-utils backdoor в 2024), систему сборки (SolarWinds), реестр, CI (Codecov).
 
@@ -103,6 +107,7 @@ level: senior
 type: theory
 freq: 1
 tags: zero-trust
+theory: principles, identity-access
 
 **Zero Trust** — модель «никогда не доверяй, всегда проверяй»: нахождение внутри сети не даёт доверия. Каждый запрос аутентифицируется, авторизуется и шифруется, исходя из идентичности, состояния устройства и контекста.
 
@@ -119,6 +124,7 @@ level: senior
 type: practice
 freq: 2
 tags: devsecops
+theory: devsecops
 
 - **Быстрые проверки — рано**: секрет-сканер в pre-commit и в CI, линтеры, SAST с инкрементальным анализом только изменённого кода — результаты в MR как комментарии.
 - **Пороговые политики**: блокировать только критичные и исправимые находки (critical/high с доступным фиксом), остальное — в бэклог. Иначе команды будут игнорировать или обходить проверки.
@@ -134,6 +140,7 @@ level: middle
 type: practice
 freq: 3
 tags: hardening, linux
+theory: hardening
 
 **Доступ:**
 - SSH только по ключам: `PasswordAuthentication no`, `PermitRootLogin no`, ограничить `AllowUsers`/`AllowGroups`;
@@ -175,6 +182,7 @@ level: senior
 type: theory
 freq: 3
 tags: vault, секреты
+theory: vault
 
 **Vault** — централизованное управление секретами: хранение, выдача временных учётных данных, шифрование как сервис, PKI, аудит. После перехода HashiCorp на лицензию BSL (2023) сообщество развивает открытый форк **OpenBao** (Linux Foundation) с совместимым API.
 
@@ -200,6 +208,7 @@ level: senior
 type: practice
 freq: 2
 tags: vault, политики
+theory: vault
 
 **Политика** (HCL) — разрешения на пути API:
 ```hcl
@@ -243,6 +252,7 @@ level: senior
 type: practice
 freq: 2
 tags: vault, динамические-секреты, бд
+theory: dynamic-secrets
 
 **Статический секрет** — пароль, который кто-то создал и положил в хранилище; живёт долго, известен многим, ротация болезненная.
 
@@ -289,6 +299,7 @@ level: senior
 type: design
 freq: 3
 tags: vault, kubernetes, external-secrets
+theory: dynamic-secrets, kubernetes/config
 
 | Подход | Как работает | Плюсы | Минусы |
 |---|---|---|---|
@@ -314,6 +325,7 @@ level: middle
 type: practice
 freq: 3
 tags: tls, cert-manager, letsencrypt
+theory: pki, network/tls
 
 **ACME** — протокол автоматического выпуска сертификатов (Let's Encrypt, ZeroSSL, корпоративные CA с поддержкой ACME). Удостоверяющий центр проверяет, что вы контролируете домен, через **challenge**:
 - **HTTP-01**: CA запрашивает `http://домен/.well-known/acme-challenge/<токен>` — нужен доступ к порту 80 из интернета; не подходит для wildcard-сертификатов;
@@ -359,6 +371,7 @@ level: middle
 type: theory
 freq: 2
 tags: sso, oidc, keycloak
+theory: identity-access
 
 **SSO** (Single Sign-On) — один корпоративный аккаунт для всех систем: GitLab, Grafana, ArgoCD, Kubernetes, Vault, Jenkins, VPN. Плюсы: MFA в одном месте, мгновенное отключение уволенного сотрудника, управление доступом через группы, аудит.
 
@@ -382,6 +395,7 @@ level: senior
 type: design
 freq: 2
 tags: pam, доступ, аудит
+theory: identity-access
 
 **Проблема:** у многих инженеров постоянные административные права на прод (SSH-ключи на всех серверах, kubeconfig с cluster-admin, роль администратора в облаке). Каждый такой аккаунт — цель для атаки, а после увольнения или смены роли доступы часто забывают отозвать.
 
