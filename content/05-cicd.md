@@ -31,6 +31,7 @@ level: senior
 type: design
 freq: 3
 tags: дизайн, пайплайн
+theory: principles, pipeline-design, deploy-strategies
 
 Хороший ответ — **поэтапный план**, а не «поставлю Jenkins».
 
@@ -61,6 +62,7 @@ level: middle
 type: theory
 freq: 3
 tags: деплой
+theory: deploy-strategies
 
 | Стратегия | Как работает | Плюсы | Минусы |
 |---|---|---|---|
@@ -80,6 +82,7 @@ level: senior
 type: scenario
 freq: 3
 tags: деплой, бд
+theory: deploy-strategies
 
 Паттерн **expand / contract** (parallel change). Пример: переименование колонки `name` → `full_name`:
 
@@ -101,6 +104,7 @@ level: senior
 type: scenario
 freq: 3
 tags: оптимизация
+theory: pipeline-design
 
 Сначала **измерить**: какие джобы самые долгие, где ожидание раннеров, где критический путь.
 
@@ -120,6 +124,7 @@ level: senior
 type: theory
 freq: 3
 tags: gitops, argocd
+theory: gitops
 
 **GitOps** — практика, где **Git — единственный источник истины** о желаемом состоянии инфраструктуры и приложений, а специальный агент непрерывно **согласовывает** кластер с Git.
 
@@ -142,6 +147,7 @@ level: senior
 type: practice
 freq: 3
 tags: безопасность, supply-chain
+theory: security
 
 Угрозы: утечка секретов из CI, компрометация зависимостей (typosquatting, вредоносные обновления), подмена артефактов, выполнение кода из форков в привилегированных раннерах.
 
@@ -158,6 +164,7 @@ level: middle
 type: practice
 freq: 2
 tags: gitlab
+theory: pipeline-design, tools
 
 - **cache** — для ускорения: зависимости, переиспользуемые между **пайплайнами**. Не гарантирован, может отсутствовать. Ключ по lock-файлу: `cache: key: files: [package-lock.json]`.
 - **artifacts** — результаты джобы, передаваемые **следующим джобам того же пайплайна** и доступные для скачивания: бинарники, отчёты тестов (`reports: junit`), покрытие. Гарантированы, имеют `expire_in`.
@@ -179,6 +186,7 @@ level: senior
 type: design
 freq: 2
 tags: артефакты, релизы
+theory: artifacts
 
 Принципы:
 - **Неизменяемые артефакты**: тег никогда не переписывается; `latest` не используется для деплоя. В проде фиксируем **digest** (`sha256:…`).
@@ -199,6 +207,7 @@ level: senior
 type: design
 freq: 1
 tags: монорепо
+theory: pipeline-design
 
 Проблемы: пайплайн собирает всё на каждое изменение, огромное время, конфликтующие правила.
 
@@ -216,6 +225,7 @@ level: middle
 type: theory
 freq: 2
 tags: artifactory, nexus, артефакты
+theory: artifacts
 
 **Репозиторий артефактов** — централизованное хранилище результатов сборки и зависимостей: Docker-образы, Helm-чарты, jar/npm/PyPI/Go-пакеты, deb/rpm, бинарники, Terraform-провайдеры.
 
@@ -241,6 +251,7 @@ level: middle
 type: practice
 freq: 3
 tags: gitlab, пайплайн
+theory: tools
 
 ```yaml
 stages: [test, build, deploy]
@@ -313,6 +324,7 @@ level: middle
 type: practice
 freq: 2
 tags: jenkins
+theory: tools
 
 **Архитектура:** **controller** (бывший master) хранит конфигурацию, планирует сборки, показывает UI; **агенты** (agents, nodes) выполняют сборки. Агенты подключаются по SSH или через inbound-агента (JNLP), бывают статическими или динамическими (Kubernetes plugin создаёт под на каждую сборку). Сборки на самом controller выполнять не рекомендуется (безопасность и нагрузка).
 
@@ -364,6 +376,7 @@ level: middle
 type: practice
 freq: 2
 tags: github-actions
+theory: tools
 
 - **Workflow** — YAML-файл в `.github/workflows/`, запускается по **событиям** (`on:`): push, pull_request, schedule (cron), workflow_dispatch (ручной запуск), release, теги.
 - **Job** — набор шагов на одном **runner**'е. Джобы по умолчанию идут параллельно, зависимости задаются через `needs`.
@@ -417,6 +430,7 @@ level: senior
 type: practice
 freq: 3
 tags: argocd, gitops
+theory: gitops
 
 **Argo CD** — GitOps-контроллер для Kubernetes: сравнивает желаемое состояние из Git (обычные манифесты, Helm, Kustomize, плагины) с состоянием кластера и синхронизирует их.
 
@@ -469,6 +483,7 @@ level: senior
 type: practice
 freq: 2
 tags: canary, argo-rollouts, деплой
+theory: deploy-strategies, gitops
 
 Обычный Deployment умеет только rolling update: нельзя задать «10% трафика, подождать, проверить ошибки». Для прогрессивной доставки используют **Argo Rollouts** или **Flagger**.
 
@@ -530,6 +545,7 @@ level: middle
 type: theory
 freq: 2
 tags: тестирование, пайплайн
+theory: testing
 
 **Пирамида тестирования:** много быстрых и дешёвых тестов внизу, мало медленных и дорогих наверху.
 
@@ -560,6 +576,7 @@ level: middle
 type: theory
 freq: 2
 tags: feature-flags, релизы
+theory: deploy-strategies
 
 **Feature flag** (feature toggle) — условие в коде, которое включает или выключает функциональность **без нового деплоя**:
 ```python

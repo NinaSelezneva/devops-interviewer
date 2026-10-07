@@ -40,6 +40,7 @@ level: middle
 type: theory
 freq: 3
 tags: производительность, cpu
+theory: cpu-load, troubleshooting
 
 **Load average** — экспоненциально сглаженное среднее количество задач, которые **выполняются или ждут выполнения** за 1, 5 и 15 минут.
 
@@ -57,6 +58,7 @@ level: middle
 type: theory
 freq: 3
 tags: процессы
+theory: processes
 
 Новый процесс создаётся через `fork()` (копия родителя с copy-on-write страницами), затем обычно `exec()` заменяет образ программы. Состояния: **R** (running), **S** (interruptible sleep), **D** (uninterruptible sleep), **T** (stopped), **Z** (zombie).
 
@@ -71,6 +73,7 @@ level: middle
 type: theory
 freq: 3
 tags: процессы, сигналы
+theory: signals, processes
 
 Сигнал — асинхронное уведомление процесса ядром.
 
@@ -93,6 +96,7 @@ level: middle
 type: theory
 freq: 3
 tags: память
+theory: memory
 
 Linux использует свободную память под **page cache** (кеш файлов) и буферы — неиспользуемая память считается потраченной впустую. Поэтому смотреть надо на колонку **available** в `free -m`, а не `free`: она оценивает, сколько можно выделить без свопинга (включая освобождаемый кеш).
 
@@ -110,6 +114,7 @@ level: senior
 type: scenario
 freq: 3
 tags: файловые системы, траблшутинг
+theory: filesystem, storage
 
 Возможные причины:
 1. **Закончились inode'ы** — много мелких файлов (кеши, сессии, почтовая очередь). Проверка: `df -i`. Поиск: `find / -xdev -type d -size +1M` или подсчёт файлов по каталогам.
@@ -126,6 +131,7 @@ level: middle
 type: theory
 freq: 2
 tags: файловые системы
+theory: filesystem
 
 **Inode** — структура ФС, хранящая метаданные файла: тип, права, владельца, размеры, временные метки, количество ссылок и указатели на блоки данных. **Имя файла в inode не хранится** — оно хранится в записи каталога (directory entry), которая сопоставляет имя → номер inode.
 
@@ -142,6 +148,7 @@ level: middle
 type: theory
 freq: 2
 tags: загрузка, systemd
+theory: boot
 
 1. **Прошивка**: BIOS (POST, читает MBR, 446 байт загрузчика) или UEFI (читает EFI System Partition, запускает `.efi`-загрузчик; поддерживает GPT, Secure Boot).
 2. **Загрузчик** (GRUB2, systemd-boot): выбирает ядро, передаёт параметры командной строки, загружает ядро и **initramfs**.
@@ -156,6 +163,7 @@ level: middle
 type: practice
 freq: 3
 tags: systemd
+theory: systemd
 
 Unit — объект, которым управляет systemd: `.service`, `.socket`, `.timer`, `.mount`, `.target` и др. Пример:
 
@@ -189,6 +197,7 @@ level: senior
 type: scenario
 freq: 3
 tags: производительность, траблшутинг
+theory: troubleshooting, cpu-load, memory
 
 Важен **структурированный подход**, а не случайные команды.
 
@@ -210,6 +219,7 @@ level: senior
 type: theory
 freq: 3
 tags: контейнеры, ядро
+theory: isolation
 
 Это два механизма ядра, на которых построены контейнеры.
 
@@ -233,6 +243,7 @@ level: middle
 type: practice
 freq: 2
 tags: траблшутинг
+theory: fd, processes, troubleshooting
 
 - Порт: `ss -tulpn | grep :8080` или `lsof -i :8080`, `fuser 8080/tcp`.
 - Файл/каталог: `lsof /var/log/app.log`, `fuser -vm /mnt/data` (почему не размонтируется).
@@ -250,6 +261,7 @@ level: middle
 type: theory
 freq: 2
 tags: безопасность, права
+theory: permissions
 
 Базовые права `rwx` для владельца, группы и остальных (`chmod 750`). Для каталога: `r` — читать список, `w` — создавать/удалять файлы, `x` — входить и обращаться к файлам по имени.
 
@@ -265,6 +277,7 @@ level: senior
 type: scenario
 freq: 2
 tags: лимиты, траблшутинг
+theory: fd
 
 Симптомы: ошибки `Too many open files` (EMFILE), сервис перестаёт принимать соединения, хотя CPU и память в норме.
 
@@ -281,6 +294,7 @@ level: senior
 type: theory
 freq: 2
 tags: systemd, cgroups
+theory: systemd, isolation
 
 **Типы юнитов** (по расширению файла):
 | Тип | Назначение |
@@ -332,6 +346,7 @@ level: senior
 type: practice
 freq: 2
 tags: syscalls, strace, траблшутинг
+theory: kernel
 
 **Системный вызов** (syscall) — единственный способ для пользовательского процесса попросить ядро что-то сделать: открыть файл, выделить память, создать процесс, отправить данные в сеть. Процессор переключается из **user space** (кольцо 3, ограниченные привилегии) в **kernel space** (кольцо 0), ядро выполняет работу и возвращает результат или код ошибки (`errno`: `ENOENT`, `EACCES`, `EAGAIN`...).
 
@@ -364,6 +379,7 @@ level: senior
 type: scenario
 freq: 2
 tags: файлы, права, траблшутинг
+theory: filesystem, permissions
 
 Удаление файла — это `unlink()`, то есть изменение **каталога**, а не самого файла. Отсюда главный нюанс: права на файл для удаления не важны.
 
@@ -385,6 +401,7 @@ level: middle
 type: scenario
 freq: 3
 tags: логи, диск, logrotate
+theory: filesystem, logs
 
 **Плохой вариант — `rm app.log`.** Процесс продолжает писать в удалённый файл через открытый дескриптор: место **не освободится**, а новых логов в файловой системе вы больше не увидите.
 
@@ -426,6 +443,7 @@ level: middle
 type: practice
 freq: 2
 tags: пользователи, sudo, права
+theory: permissions
 
 **Где хранится информация:**
 - `/etc/passwd` — пользователи: `имя:x:UID:GID:комментарий:домашний_каталог:shell`;
@@ -460,6 +478,7 @@ level: middle
 type: practice
 freq: 3
 tags: cron, планировщик
+theory: cron
 
 **cron** — демон, запускающий команды по расписанию. Где задаются задания:
 - `crontab -e` / `crontab -l` — задания пользователя (хранятся в `/var/spool/cron/`);
@@ -499,6 +518,7 @@ level: middle
 type: practice
 freq: 3
 tags: find, grep, sed
+theory: text-tools
 
 ```bash
 # --- find ---
@@ -533,6 +553,7 @@ level: middle
 type: practice
 freq: 2
 tags: диски, lvm, fstab
+theory: storage
 
 **Посмотреть диски и разделы:** `lsblk`, `df -h`, `blkid`, `fdisk -l`.
 
@@ -570,6 +591,7 @@ level: middle
 type: practice
 freq: 2
 tags: логи, journald
+theory: logs
 
 **Классические текстовые логи** в `/var/log/`:
 - `syslog` (Debian/Ubuntu) или `messages` (RHEL) — общий системный журнал;
@@ -601,6 +623,7 @@ level: middle
 type: theory
 freq: 2
 tags: procfs, sysfs
+theory: procfs
 
 Это **виртуальные файловые системы**: файлы не хранятся на диске, ядро генерирует их содержимое при чтении. Через них ядро показывает своё состояние, а часть параметров можно менять записью.
 
@@ -632,6 +655,7 @@ level: middle
 type: theory
 freq: 2
 tags: swap, память
+theory: memory
 
 **Swap** — область на диске (раздел или файл), куда ядро выгружает редко используемые страницы **анонимной памяти** (heap процессов), освобождая RAM. Страницы файлового кеша в swap не выгружаются: их можно просто сбросить и перечитать с диска.
 
@@ -654,6 +678,7 @@ level: senior
 type: practice
 freq: 2
 tags: sysctl, производительность
+theory: procfs
 
 **sysctl** — чтение и изменение параметров ядра (`/proc/sys/`):
 ```bash
@@ -692,6 +717,7 @@ level: middle
 type: practice
 freq: 2
 tags: apt, dnf, пакеты
+theory: packages
 
 **Семейства:**
 - **Debian / Ubuntu**: пакеты `.deb`, низкоуровневый `dpkg`, высокоуровневый **`apt`**; репозитории в `/etc/apt/sources.list` и `/etc/apt/sources.list.d/` (новый формат `.sources` — deb822);
@@ -731,6 +757,7 @@ level: middle
 type: theory
 freq: 2
 tags: selinux, apparmor, безопасность
+theory: mac
 
 Обычные права Linux (**DAC** — discretionary access control) основаны на владельце файла: процесс, работающий от root или от владельца, может делать с файлом что угодно. **MAC** (mandatory access control) добавляет **обязательную политику**, которую процесс не может обойти даже от root: «процессу nginx можно читать только `/var/www` и слушать 80/443».
 
@@ -762,6 +789,7 @@ level: senior
 type: theory
 freq: 1
 tags: cgroups, psi, производительность
+theory: isolation, cpu-load
 
 **cgroup v1 vs v2:**
 | | cgroup v1 | cgroup v2 |

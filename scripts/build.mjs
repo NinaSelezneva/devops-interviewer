@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Собирает content/*.md в web/data.js (window.DATA), валидирует метаданные.
+// Собирает content/*.md (вопросы) и theory/*.md (подробная теория) в web/data.js (window.DATA),
+// валидирует метаданные и ссылки вопросов на главы теории.
 // Без внешних зависимостей: свой минимальный Markdown-рендерер.
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const contentDir = join(root, 'content');
+const theoryDir = join(root, 'theory');
 const outFile = join(root, 'web', 'data.js');
 
 const LEVELS = ['middle', 'senior', 'lead'];
@@ -23,7 +25,8 @@ function inline(text) {
   });
   s = esc(s)
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([^\]]+)\]\((#\/[^)\s]+)\)/g, '<a href="$2">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => codes[+i]);
 }
 
@@ -115,16 +118,22 @@ function hash(s) {
   return h.toString(36);
 }
 
-function parseTopic(file, raw) {
+function frontMatter(file, raw) {
   const fm = raw.match(/^---\n([\s\S]*?)\n---\n/);
   if (!fm) throw new Error(`${file}: нет front matter`);
   const meta = Object.fromEntries(fm[1].split('\n').map((l) => {
     const k = l.indexOf(':');
     return [l.slice(0, k).trim(), l.slice(k + 1).trim()];
   }));
+  return { meta, body: raw.slice(fm[0].length) };
+}
+
+const splitList = (s) => (s || '').split(',').map((t) => t.trim()).filter(Boolean);
+
+function parseTopic(file, raw) {
+  const { meta, body } = frontMatter(file, raw);
   for (const k of ['id', 'title', 'icon', 'order']) if (!meta[k]) throw new Error(`${file}: нет поля ${k}`);
 
-  const body = raw.slice(fm[0].length);
   const parts = body.split(/^## Q:\s*/m);
   const theory = parts.shift().trim();
   const questions = parts.map((part, idx) => {
@@ -155,7 +164,9 @@ function parseTopic(file, raw) {
       level: qm.level,
       type: qm.type,
       freq,
-      tags: (qm.tags || '').split(',').map((t) => t.trim()).filter(Boolean),
+      tags: splitList(qm.tags),
+      // ссылки на главы теории: «memory» — глава своей темы, «network/tcp» — другой
+      theory: splitList(qm.theory).map((r) => (r.includes('/') ? r : `${meta.id}/${r}`)),
       ...(task && { p: md(task) }),
       a: md(answer),
     };
@@ -170,13 +181,71 @@ const topics = readdirSync(contentDir).filter((f) => f.endsWith('.md')).sort()
   .map((f) => parseTopic(f, readFileSync(join(contentDir, f), 'utf8').replace(/\r/g, '')))
   .sort((a, b) => a.order - b.order);
 
+// ---------- Подробная теория ----------
+// Файл theory/*.md: front matter с полем topic, вступление, затем главы:
+//   ## Заголовок главы
+//   id: stable-id
+function parseTheory(file, raw) {
+  const { meta, body } = frontMatter(file, raw);
+  if (!meta.topic) throw new Error(`${file}: нет поля topic`);
+  const parts = body.split(/^## /m);
+  const intro = parts.shift().trim();
+  const chapters = parts.map((part, idx) => {
+    const lines = part.split('\n');
+    const title = lines.shift().trim();
+    const idLine = lines.findIndex((l) => l.trim());
+    const m = idLine >= 0 && lines[idLine].match(/^id:\s*([a-z0-9-]+)\s*$/);
+    if (!m) throw new Error(`${file} глава #${idx + 1} «${title}»: после заголовка нужна строка id: <латиница-и-дефисы>`);
+    const text = lines.slice(idLine + 1).join('\n').trim();
+    if (text.length < 200) throw new Error(`${file} глава «${title}»: слишком короткий текст`);
+    return { id: `${meta.topic}/${m[1]}`, title, html: md(text) };
+  });
+  return { topic: meta.topic, intro: md(intro), chapters };
+}
+
+const theory = existsSync(theoryDir)
+  ? readdirSync(theoryDir).filter((f) => f.endsWith('.md')).sort()
+    .map((f) => parseTheory(f, readFileSync(join(theoryDir, f), 'utf8').replace(/\r/g, '')))
+  : [];
+const topicIds = new Set(topics.map((t) => t.id));
+const chapterIds = new Set();
+for (const th of theory) {
+  if (!topicIds.has(th.topic)) throw new Error(`theory: неизвестная тема ${th.topic}`);
+  for (const ch of th.chapters) {
+    if (chapterIds.has(ch.id)) throw new Error(`Дубликат id главы теории: ${ch.id}`);
+    chapterIds.add(ch.id);
+  }
+}
+for (const t of topics) for (const q of t.questions) {
+  for (const ref of q.theory) {
+    if (!chapterIds.has(ref)) throw new Error(`${t.id}: вопрос «${q.q.slice(0, 50)}» ссылается на несуществующую главу теории ${ref}`);
+  }
+}
+// Ссылки вида [текст](#/theory/тема/глава) внутри текста глав и ответов
+const theoryTopics = new Set(theory.map((th) => th.topic));
+const checkLinks = (html, where) => {
+  for (const [, target] of html.matchAll(/href="#\/theory\/([^"]+)"/g)) {
+    if (!chapterIds.has(target) && !theoryTopics.has(target)) throw new Error(`${where}: ссылка на несуществующую главу теории #/theory/${target}`);
+  }
+};
+for (const th of theory) for (const ch of th.chapters) checkLinks(ch.html, `theory ${ch.id}`);
+for (const t of topics) {
+  checkLinks(t.theory, `${t.id}: теория темы`);
+  for (const q of t.questions) checkLinks((q.p || '') + q.a, `${t.id}: «${q.q.slice(0, 50)}»`);
+}
+
 const ids = new Set();
 for (const t of topics) for (const q of t.questions) {
   if (ids.has(q.id)) throw new Error(`Дубликат id вопроса: ${q.id} (${q.q})`);
   ids.add(q.id);
 }
 
-writeFileSync(outFile, `// Сгенерировано scripts/build.mjs — не редактируйте вручную.\nwindow.DATA = ${JSON.stringify({ builtAt: new Date().toISOString(), topics })};\n`);
+writeFileSync(outFile, `// Сгенерировано scripts/build.mjs — не редактируйте вручную.\nwindow.DATA = ${JSON.stringify({ builtAt: new Date().toISOString(), topics, theory })};\n`);
 const total = topics.reduce((n, t) => n + t.questions.length, 0);
 console.log(`OK: ${topics.length} тем, ${total} вопросов → web/data.js`);
-for (const t of topics) console.log(`  ${t.icon} ${t.title.padEnd(32)} ${t.questions.length}`);
+for (const t of topics) {
+  const th = theory.find((x) => x.topic === t.id);
+  const linked = t.questions.filter((q) => q.theory.length).length;
+  console.log(`  ${t.icon} ${t.title.padEnd(32)} ${String(t.questions.length).padStart(3)}` +
+    (th ? `   теория: ${th.chapters.length} глав, ссылки из ${linked} вопросов` : ''));
+}

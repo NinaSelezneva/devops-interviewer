@@ -43,6 +43,7 @@ level: senior
 type: theory
 freq: 3
 tags: архитектура
+theory: architecture, pods
 
 1. **kubectl** валидирует манифест и отправляет запрос (server-side apply/PATCH) в **API-сервер**.
 2. API-сервер: **аутентификация** (сертификат, токен, OIDC) → **авторизация** (RBAC) → **mutating admission** (webhooks, дефолты, инжекция sidecar) → валидация схемы → **validating admission** (политики) → запись объекта в **etcd**.
@@ -63,6 +64,7 @@ level: middle
 type: scenario
 freq: 3
 tags: траблшутинг, scheduling
+theory: scheduling, troubleshooting, resources
 
 Pending = под ещё не запущен на ноде. Первое — `kubectl describe pod` → секция **Events**.
 
@@ -80,6 +82,7 @@ level: middle
 type: scenario
 freq: 3
 tags: траблшутинг
+theory: troubleshooting, pods
 
 CrashLoopBackOff — контейнер стартует и падает, kubelet перезапускает его с экспоненциальной задержкой (10с → 20с → … → 5 мин).
 
@@ -100,6 +103,7 @@ level: senior
 type: theory
 freq: 3
 tags: ресурсы
+theory: resources
 
 - **requests** — гарантированный объём, используется **планировщиком** для размещения и как вес CPU (`cpu.weight`).
 - **limits** — потолок, применяется через cgroups:
@@ -122,6 +126,7 @@ level: middle
 type: theory
 freq: 3
 tags: пробы, надёжность
+theory: pods
 
 - **readinessProbe** — готов ли под **принимать трафик**. При провале под убирается из эндпоинтов Service, но **не перезапускается**.
 - **livenessProbe** — жив ли процесс. При провале kubelet **перезапускает контейнер**. Нужна для выхода из дедлоков.
@@ -141,6 +146,7 @@ level: middle
 type: theory
 freq: 3
 tags: сеть, service
+theory: networking
 
 Service даёт стабильный виртуальный IP (**ClusterIP**) и DNS-имя (`svc.ns.svc.cluster.local`) для набора подов, выбранных по **selector**. Контроллер поддерживает **EndpointSlice** — список IP готовых подов.
 
@@ -165,6 +171,7 @@ level: senior
 type: theory
 freq: 2
 tags: сеть, ingress
+theory: ingress, networking
 
 Путь: DNS → облачный L4/L7-балансировщик → (NodePort или напрямую IP подов) → **Ingress-контроллер** (nginx, Traefik, HAProxy, Envoy) → Service/эндпоинты → под.
 
@@ -182,6 +189,7 @@ level: middle
 type: theory
 freq: 3
 tags: workloads
+theory: workloads
 
 - **Deployment** — stateless-приложения. Поды взаимозаменяемы, случайные имена, rolling update через ReplicaSet'ы, откат (`kubectl rollout undo`).
 - **StatefulSet** — stateful (БД, Kafka, ZooKeeper):
@@ -198,6 +206,7 @@ level: senior
 type: scenario
 freq: 3
 tags: деплой, надёжность
+theory: workloads, operations, pods
 
 Rolling update сам по себе не гарантирует отсутствия ошибок. Чек-лист:
 
@@ -218,6 +227,7 @@ level: senior
 type: theory
 freq: 3
 tags: масштабирование
+theory: scaling
 
 Три уровня:
 
@@ -235,6 +245,7 @@ level: senior
 type: practice
 freq: 2
 tags: безопасность, rbac
+theory: security
 
 Субъекты: **User** и **Group** (из сертификата/OIDC, в Kubernetes не хранятся), **ServiceAccount** (объект в namespace).
 
@@ -272,6 +283,7 @@ level: senior
 type: theory
 freq: 2
 tags: сеть, cni
+theory: networking
 
 Сетевая модель Kubernetes требует: **каждый под имеет свой IP**, поды общаются друг с другом **без NAT**, ноды видят поды. Реализацию отдают CNI-плагину — kubelet вызывает его при создании sandbox, плагин создаёт veth-пару, выдаёт IP (IPAM) и настраивает маршруты.
 
@@ -288,6 +300,7 @@ level: middle
 type: theory
 freq: 2
 tags: хранение
+theory: storage
 
 - **PersistentVolume (PV)** — ресурс хранилища в кластере (диск, NFS-шар).
 - **PersistentVolumeClaim (PVC)** — запрос приложения: размер, режим доступа.
@@ -307,6 +320,7 @@ level: senior
 type: practice
 freq: 2
 tags: эксплуатация, etcd
+theory: operations, architecture
 
 **Обновление** (на одну минорную версию за раз):
 1. Прочитать changelog, найти **удалённые API** (`kubent`, `pluto`), проверить совместимость аддонов (CNI, Ingress, CSI, операторов).
@@ -332,6 +346,7 @@ level: middle
 type: theory
 freq: 2
 tags: scheduling
+theory: scheduling
 
 - **nodeSelector** — простое совпадение лейблов ноды.
 - **nodeAffinity** — выразительные правила: `requiredDuringScheduling...` (жёстко) и `preferred...` (с весом).
@@ -345,6 +360,7 @@ level: senior
 type: theory
 freq: 2
 tags: расширяемость
+theory: extensibility
 
 **CRD** (CustomResourceDefinition) расширяет API Kubernetes новым типом ресурса (например, `PostgresCluster`), с OpenAPI-схемой и валидацией. Сам по себе CRD — только хранение данных в etcd.
 
@@ -364,6 +380,7 @@ level: senior
 type: theory
 freq: 2
 tags: pod, архитектура
+theory: pods
 
 **Pause-контейнер** (infra container, образ `registry.k8s.io/pause`) — первый контейнер, который kubelet через CRI создаёт для каждого пода (**pod sandbox**). Это крошечный процесс (несколько сотен КБ), который почти всё время спит в `pause()`.
 
@@ -383,6 +400,7 @@ level: middle
 type: practice
 freq: 3
 tags: deployment, манифест, квоты
+theory: workloads, resources, objects
 
 Минимально грамотный Deployment с ресурсами, пробами и безопасным контекстом:
 ```yaml
@@ -477,6 +495,7 @@ level: middle
 type: practice
 freq: 3
 tags: configmap, secret
+theory: config
 
 **ConfigMap** — неконфиденциальная конфигурация (ключ-значение или целые файлы). **Secret** — то же самое для чувствительных данных: пароли, токены, TLS-сертификаты. Значения в Secret хранятся в **base64 — это кодирование, а не шифрование**. Защиту дают RBAC, шифрование etcd и внешние хранилища секретов.
 
@@ -530,6 +549,7 @@ level: middle
 type: theory
 freq: 2
 tags: namespace, labels
+theory: objects
 
 **Namespace** — логическое разделение кластера: команды, окружения, приложения.
 - Имена ресурсов уникальны внутри namespace.
@@ -560,6 +580,7 @@ level: middle
 type: practice
 freq: 3
 tags: kubectl
+theory: objects, troubleshooting
 
 ```bash
 # Контекст и namespace
@@ -610,6 +631,7 @@ level: middle
 type: practice
 freq: 3
 tags: helm
+theory: packaging
 
 **Helm** — пакетный менеджер для Kubernetes. **Чарт** — шаблонизированный набор манифестов; **релиз** — установленный экземпляр чарта в кластере с конкретными значениями.
 
@@ -665,6 +687,7 @@ level: middle
 type: theory
 freq: 2
 tags: helm, kustomize
+theory: packaging
 
 **Kustomize** — встроен в kubectl (`kubectl apply -k`). Работает **без шаблонов**: берёт обычные YAML-манифесты (**base**) и накладывает на них изменения для окружений (**overlays**) через патчи.
 ```
@@ -709,6 +732,7 @@ level: senior
 type: theory
 freq: 2
 tags: service-mesh, istio, linkerd
+theory: service-mesh
 
 **Service mesh** — инфраструктурный слой, который берёт на себя сетевое взаимодействие между сервисами **без изменения их кода**:
 - **безопасность**: автоматический **mTLS** между всеми сервисами, идентичность сервисов (SPIFFE), авторизация «кто к кому может обращаться» на уровне L7;
@@ -738,6 +762,7 @@ level: senior
 type: practice
 freq: 2
 tags: istio, канарейка, mtls
+theory: service-mesh
 
 **Канарейка 90/10 и ретраи** (классический API Istio; в новых установках то же можно описать через Gateway API `HTTPRoute`):
 ```yaml
@@ -794,6 +819,7 @@ level: middle
 type: theory
 freq: 2
 tags: pod, init, sidecar
+theory: pods
 
 **Init-контейнеры** запускаются **до** основных контейнеров пода, **по очереди**, каждый должен **успешно завершиться**. Если init-контейнер падает, kubelet перезапускает его (по `restartPolicy` пода), а основные контейнеры не стартуют.
 
@@ -831,6 +857,7 @@ level: senior
 type: scenario
 freq: 2
 tags: finalizers, траблшутинг
+theory: extensibility, troubleshooting
 
 При удалении namespace Kubernetes удаляет все объекты в нём. Namespace остаётся в `Terminating`, пока внутри что-то не удалилось. Почти всегда причина — **finalizers**.
 
@@ -864,6 +891,7 @@ level: senior
 type: scenario
 freq: 3
 tags: node, траблшутинг
+theory: troubleshooting, architecture
 
 **NotReady** означает, что **kubelet** перестал сообщать о здоровье ноды API-серверу (lease не обновляется) или сам сообщает о проблеме. Через некоторое время (по умолчанию около 5 минут) поды с ноды начинают выселяться (taint `node.kubernetes.io/unreachable` / `not-ready` с `NoExecute` и `tolerationSeconds: 300`).
 
@@ -894,6 +922,7 @@ level: senior
 type: theory
 freq: 2
 tags: eviction, ресурсы
+theory: resources
 
 **Eviction** — kubelet принудительно завершает поды, когда на ноде заканчивается несжимаемый ресурс:
 - **memory.available** (по умолчанию порог < 100Mi);
@@ -936,6 +965,7 @@ level: senior
 type: theory
 freq: 2
 tags: admission, политики
+theory: security
 
 **Admission controllers** — этап обработки запроса в API-сервере **после аутентификации и авторизации, но до записи в etcd**. Могут **изменить** объект (mutating) или **отклонить** запрос (validating).
 
@@ -967,6 +997,7 @@ level: middle
 type: practice
 freq: 2
 tags: networkpolicy, безопасность
+theory: networking
 
 **NetworkPolicy** работает только при поддержке CNI (Calico, Cilium, Antrea и др.; Flannel без дополнений — нет). Правила **аддитивны**: если под выбран хотя бы одной политикой определённого направления (Ingress или Egress), разрешено **только** то, что явно описано во всех политиках; иначе — всё разрешено.
 
@@ -1039,6 +1070,7 @@ level: middle
 type: practice
 freq: 2
 tags: job, cronjob
+theory: workloads
 
 ```yaml
 apiVersion: batch/v1

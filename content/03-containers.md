@@ -37,6 +37,7 @@ level: middle
 type: theory
 freq: 3
 tags: основы
+theory: what-is-container, linux/isolation
 
 | | Виртуальная машина | Контейнер |
 |---|---|---|
@@ -53,6 +54,7 @@ level: middle
 type: practice
 freq: 3
 tags: dockerfile, оптимизация
+theory: images, dockerfile
 
 Каждая инструкция `RUN`, `COPY`, `ADD` создаёт **неизменяемый слой** (diff файловой системы). При запуске слои объединяются через **overlayfs** (lowerdir — слои образа, upperdir — записываемый слой контейнера, copy-on-write). Слои переиспользуются между образами и кешируются при сборке.
 
@@ -86,6 +88,7 @@ level: middle
 type: theory
 freq: 3
 tags: dockerfile, сигналы
+theory: dockerfile, lifecycle, linux/signals
 
 - **ENTRYPOINT** — исполняемый файл контейнера; **CMD** — аргументы по умолчанию (или команда, если ENTRYPOINT нет). `docker run image args` заменяет CMD; ENTRYPOINT меняется только через `--entrypoint`.
 - Типичный паттерн: `ENTRYPOINT ["/app"]`, `CMD ["--port=8080"]`.
@@ -100,6 +103,7 @@ level: middle
 type: theory
 freq: 2
 tags: сеть
+theory: networking
 
 - **bridge** (по умолчанию): у контейнера свой net namespace, пара **veth** соединяет его с мостом `docker0` на хосте, исходящий трафик через NAT (masquerade), публикация портов `-p 8080:80` — DNAT-правила iptables (или userland-proxy).
 - **Пользовательская bridge-сеть** (`docker network create`): встроенный **DNS по именам контейнеров** — именно так общаются сервисы в docker-compose. В дефолтном `docker0` DNS по именам нет.
@@ -116,6 +120,7 @@ level: middle
 type: theory
 freq: 2
 tags: хранение
+theory: storage
 
 Записываемый слой контейнера эфемерен и медленный (copy-on-write), поэтому данные выносят наружу:
 
@@ -130,6 +135,7 @@ level: senior
 type: practice
 freq: 3
 tags: безопасность
+theory: security
 
 На каждом этапе жизненного цикла:
 
@@ -157,6 +163,7 @@ level: senior
 type: theory
 freq: 2
 tags: рантаймы, kubernetes
+theory: runtimes
 
 - **runc** — низкоуровневый OCI-рантайм: создаёт namespaces, cgroups и запускает процесс. Альтернативы: crun (C, быстрее), gVisor (runsc), Kata.
 - **containerd** — высокоуровневый рантайм-демон: скачивание и хранение образов, снапшоты (overlayfs), управление жизненным циклом через shim, вызов runc. Вынесен из Docker, проект CNCF.
@@ -170,6 +177,7 @@ level: middle
 type: scenario
 freq: 3
 tags: траблшутинг
+theory: lifecycle
 
 1. `docker ps -a` — код выхода (`Exited (137)`, `Exited (1)`).
    - **137** = 128 + 9 (SIGKILL) — часто **OOM** (`docker inspect` → `State.OOMKilled: true`) или принудительная остановка.
@@ -185,6 +193,7 @@ level: middle
 type: practice
 freq: 3
 tags: docker-compose
+theory: compose
 
 **Docker Compose** — инструмент для описания и запуска **многоконтейнерного приложения на одном хосте** одним YAML-файлом. Сейчас это плагин `docker compose` (v2, на Go); старый `docker-compose` (v1, Python) устарел.
 
@@ -236,6 +245,7 @@ level: middle
 type: scenario
 freq: 3
 tags: сеть, docker, траблшутинг
+theory: networking
 
 - **127.0.0.1** (`localhost`, loopback) — адрес, доступный **только изнутри того же сетевого namespace**. Сервис, слушающий `127.0.0.1:8080`, принимает подключения лишь от процессов на этой же машине (или в этом же контейнере или поде).
 - **0.0.0.0** в `bind()` означает «**слушать на всех интерфейсах**» (INADDR_ANY): loopback, eth0, docker0 и т.д. Как адрес назначения 0.0.0.0 не используется. В таблице маршрутов `0.0.0.0/0` означает маршрут по умолчанию.
@@ -260,6 +270,7 @@ level: middle
 type: practice
 freq: 3
 tags: dockerfile
+theory: dockerfile
 
 ```dockerfile
 FROM python:3.12-slim
@@ -304,6 +315,7 @@ level: middle
 type: practice
 freq: 2
 tags: docker, cli
+theory: lifecycle, images
 
 ```bash
 docker ps -a                          # контейнеры (все, включая остановленные)
@@ -341,6 +353,7 @@ level: middle
 type: theory
 freq: 2
 tags: dockerfile
+theory: dockerfile
 
 **COPY vs ADD:**
 - `COPY` — просто копирует файлы и каталоги из контекста сборки в образ. Предсказуем, **используйте его по умолчанию**.
@@ -369,6 +382,7 @@ level: middle
 type: theory
 freq: 2
 tags: docker, healthcheck
+theory: lifecycle
 
 **Restart policy** — что делать, когда контейнер завершился:
 - `no` (по умолчанию) — не перезапускать;
@@ -399,6 +413,7 @@ level: middle
 type: theory
 freq: 2
 tags: podman, rootless, безопасность
+theory: runtimes, security
 
 **Podman** — инструмент для запуска контейнеров с **совместимым с Docker CLI** (`alias docker=podman` работает для большинства команд), разработанный Red Hat.
 
@@ -429,6 +444,7 @@ level: middle
 type: theory
 freq: 2
 tags: registry, образы
+theory: images
 
 **Полное имя образа:** `registry.example.com/team/api:1.4.2@sha256:9f86d0...`
 - **реестр** (по умолчанию `docker.io`), **репозиторий** (`team/api`), **тег** (`1.4.2`, по умолчанию `latest`), **digest** (хеш манифеста).

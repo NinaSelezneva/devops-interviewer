@@ -45,6 +45,7 @@ level: senior
 type: theory
 freq: 3
 tags: kafka, репликация
+theory: kafka-replication
 
 Каждая партиция имеет **лидера** и **фолловеров** на других брокерах. Продюсеры пишут и потребители читают через лидера (чтение с ближайшей реплики тоже возможно, KIP-392). Фолловеры копируют данные у лидера.
 
@@ -67,6 +68,7 @@ level: senior
 type: theory
 freq: 3
 tags: kafka, consumer
+theory: kafka-consumers
 
 **Consumer group** — набор потребителей с одинаковым `group.id`, которые **делят партиции топика между собой**: каждая партиция в каждый момент читается **только одним** потребителем группы.
 - Параллелизм группы **ограничен числом партиций**: при 6 партициях седьмой потребитель будет простаивать.
@@ -92,6 +94,7 @@ level: senior
 type: scenario
 freq: 3
 tags: kafka, траблшутинг, lag
+theory: kafka-consumers, kafka-ops
 
 **Consumer lag** — разница между последним offset в партиции и закоммиченным offset группы, то есть сколько сообщений ещё не обработано. Это главная метрика здоровья потребителей.
 
@@ -122,6 +125,7 @@ level: senior
 type: design
 freq: 2
 tags: kafka, capacity
+theory: kafka-ops, kafka-architecture
 
 **Партиции — единица параллелизма:** одна партиция читается одним потребителем группы, и запись в партицию последовательная.
 
@@ -147,6 +151,7 @@ level: middle
 type: theory
 freq: 2
 tags: kafka, хранение
+theory: kafka-architecture
 
 Kafka хранит сообщения **независимо от того, прочитаны ли они**. Как долго — определяет политика очистки (`cleanup.policy`).
 
@@ -173,6 +178,7 @@ level: senior
 type: theory
 freq: 2
 tags: kafka, гарантии, идемпотентность
+theory: delivery
 
 - **At-most-once** — сообщение доставляется **не более одного раза**, возможна потеря. Пример: потребитель коммитит offset **до** обработки и падает.
 - **At-least-once** — **не менее одного раза**, возможны дубли. Коммит offset **после** успешной обработки; при сбое между обработкой и коммитом сообщение обработается повторно. **Самый распространённый режим.**
@@ -195,6 +201,7 @@ level: senior
 type: design
 freq: 2
 tags: паттерны, outbox, dlq
+theory: delivery
 
 **Проблема двойной записи:** сервис должен сохранить заказ в БД **и** отправить событие `OrderCreated` в Kafka. Если сделать это двумя отдельными операциями, при сбое между ними получим расхождение: заказ есть, события нет (или наоборот). Распределённые транзакции (2PC) между БД и брокером — сложно и медленно.
 
@@ -214,6 +221,7 @@ level: senior
 type: practice
 freq: 2
 tags: kafka, kubernetes, strimzi
+theory: kafka-ops, kubernetes/storage
 
 **Варианты:** managed-сервис (Amazon MSK, Confluent Cloud, Managed Kafka в Yandex Cloud и других облаках), на ВМ (Ansible), в Kubernetes с оператором — **Strimzi** (CNCF, самый популярный), Confluent for Kubernetes.
 
@@ -239,6 +247,7 @@ level: middle
 type: theory
 freq: 3
 tags: rabbitmq
+theory: rabbitmq, delivery
 
 **Модель AMQP:** продюсер публикует сообщение в **exchange** с **routing key** → exchange по **bindings** раскладывает его в **очереди** → потребители получают сообщения из очередей и подтверждают обработку.
 
@@ -268,6 +277,7 @@ level: middle
 type: theory
 freq: 2
 tags: redis
+theory: redis-nats
 
 **Redis** — хранилище данных в памяти: строки, хеши, списки, множества, отсортированные множества, потоки (streams). Однопоточная обработка команд (с потоками для ввода-вывода) — очень быстро, но тяжёлая команда (`KEYS *`, большой `SMEMBERS`) блокирует всех клиентов.
 
@@ -299,6 +309,7 @@ level: middle
 type: theory
 freq: 1
 tags: nats, очереди
+theory: redis-nats, why-async
 
 **NATS** (CNCF) — лёгкая система обмена сообщениями: один бинарник на Go, мегабайты памяти, очень низкая задержка, простая эксплуатация.
 

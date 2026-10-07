@@ -30,6 +30,7 @@ level: senior
 type: theory
 freq: 3
 tags: postgresql, репликация
+theory: replication
 
 **Физическая (streaming) репликация**: реплика получает поток WAL от мастера и применяет его — побайтовая копия всего кластера. Реплики могут обслуживать чтение (hot standby).
 
@@ -45,6 +46,7 @@ level: senior
 type: design
 freq: 2
 tags: ha, postgresql
+theory: ha
 
 Проблема: нужно автоматически определить отказ мастера, выбрать лучшую реплику, повысить её и переключить клиентов — **не допустив split-brain** (два мастера одновременно).
 
@@ -64,6 +66,7 @@ level: senior
 type: practice
 freq: 3
 tags: бэкапы, postgresql
+theory: backups, wal
 
 Виды:
 - **Логические** (`pg_dump`/`pg_dumpall`): переносимы между версиями, можно восстановить отдельную таблицу; медленные на больших БД, снимок на момент начала, без PITR.
@@ -81,6 +84,7 @@ level: senior
 type: scenario
 freq: 3
 tags: производительность, postgresql
+theory: performance, sql-indexes
 
 1. **Ресурсы сервера БД**: CPU, память, I/O (iowait, IOPS, латентность диска, исчерпание burst-кредитов gp2/IOPS в облаке), сеть.
 2. **Соединения**: `pg_stat_activity` — сколько активных, сколько `idle in transaction` (держат блокировки и мешают VACUUM), упираемся ли в `max_connections`.
@@ -98,6 +102,7 @@ level: senior
 type: theory
 freq: 2
 tags: postgresql, pgbouncer
+theory: connections-access
 
 В PostgreSQL каждое соединение — **отдельный процесс** ОС (несколько МБ памяти, накладные расходы на создание). Сотни подов × пул по 20 соединений = тысячи соединений → деградация производительности и исчерпание `max_connections`.
 
@@ -115,6 +120,7 @@ level: senior
 type: design
 freq: 2
 tags: kubernetes, stateful
+theory: choosing, kubernetes/storage
 
 Хороший ответ — **взвешенный**, с аргументами с обеих сторон.
 
@@ -137,6 +143,7 @@ level: middle
 type: theory
 freq: 3
 tags: транзакции, acid
+theory: transactions
 
 **Транзакция** — группа операций, которая выполняется как единое целое: либо все изменения применяются, либо ни одно.
 
@@ -183,6 +190,7 @@ level: senior
 type: design
 freq: 3
 tags: postgresql, ha, patroni, pgbouncer
+theory: ha, connections-access
 
 Типовая продакшен-схема на ВМ (3 узла БД + DCS):
 
@@ -235,6 +243,7 @@ level: senior
 type: theory
 freq: 2
 tags: postgresql, wal
+theory: wal
 
 **WAL** (Write-Ahead Log, журнал предзаписи) — принцип: **любое изменение сначала записывается в журнал** и сбрасывается на диск (`fsync`), и только потом изменённые страницы данных когда-нибудь записываются в файлы таблиц.
 
@@ -264,6 +273,7 @@ level: middle
 type: theory
 freq: 2
 tags: sql, процедуры
+theory: procedures
 
 - **Функция** (`CREATE FUNCTION`) — код, хранящийся в БД и **возвращающий значение** (скаляр, строку, набор строк). Вызывается внутри запроса: `SELECT calc_discount(order_id) FROM orders`. В PostgreSQL выполняется внутри транзакции вызывающего запроса и **не может** делать `COMMIT`.
 - **Процедура** (`CREATE PROCEDURE`, в PostgreSQL с версии 11) — вызывается через `CALL`, ничего не возвращает (кроме OUT-параметров) и **может управлять транзакциями** (`COMMIT`/`ROLLBACK` внутри). Подходит для пакетной обработки большими порциями.
@@ -303,6 +313,7 @@ level: middle
 type: theory
 freq: 3
 tags: sql, индексы
+theory: sql-indexes
 
 **JOIN** — объединение строк таблиц по условию:
 - **INNER JOIN** — только строки, у которых есть совпадение в обеих таблицах;
@@ -347,6 +358,7 @@ level: middle
 type: practice
 freq: 2
 tags: postgresql, права
+theory: connections-access
 
 **Пользователи и права.** В PostgreSQL пользователи и группы — это **роли** (роль с `LOGIN` — пользователь).
 ```sql
@@ -384,6 +396,7 @@ level: senior
 type: theory
 freq: 2
 tags: postgresql, vacuum
+theory: vacuum
 
 Из-за **MVCC** PostgreSQL не изменяет строки на месте: `UPDATE` создаёт **новую версию** строки, а старая помечается как «мёртвая», `DELETE` тоже только помечает строку. Мёртвые версии нужны, пока их могут видеть активные транзакции, а потом становятся мусором.
 
@@ -414,6 +427,7 @@ level: middle
 type: scenario
 freq: 2
 tags: репликация, consistency
+theory: replication
 
 **Реплики для чтения** разгружают основную БД: аналитические запросы, отчёты, «тяжёлые» страницы идут на реплики. Но асинхронная реплика **отстаёт** от мастера — от миллисекунд до минут при нагрузке, долгих запросах или проблемах с сетью и диском.
 
@@ -442,6 +456,7 @@ level: senior
 type: design
 freq: 2
 tags: бд, выбор, архитектура
+theory: choosing
 
 Универсального ответа нет, но есть разумный порядок рассуждений: **по умолчанию — PostgreSQL**, и переходить к специализированной БД, когда есть конкретная причина, которую PostgreSQL не закрывает.
 

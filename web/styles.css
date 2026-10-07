@@ -185,3 +185,33 @@ mark { background: var(--warn-soft); color: inherit; padding: 0 2px; border-radi
   .flash .q { font-size: 18px; }
   h1 { font-size: 22px; }
 }
+
+/* Подробная теория */
+.theory-refs { margin-top: 16px; padding: 10px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+.theory-refs-head { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.theory-ref > summary { list-style: none; cursor: pointer; padding: 4px 0; color: var(--accent); display: flex; gap: 8px; }
+.theory-ref > summary::-webkit-details-marker { display: none; }
+.theory-ref > summary .chev { color: var(--muted); transition: transform .15s; }
+.theory-ref[open] > summary .chev { transform: rotate(90deg); }
+.theory-ref-body { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 16px; margin: 6px 0 10px; }
+.theory-topic { margin-bottom: 14px; }
+.theory-topic h2 { margin-top: 0; }
+.theory-topic h2 a { color: var(--text); }
+.toc { margin: 0; padding-left: 24px; }
+.toc li { margin: 4px 0; }
+.crumbs { color: var(--muted); font-size: 14px; }
+.lead-prose { color: var(--muted); }
+.chapter { padding: 24px 28px; }
+.chapter h1 { margin-bottom: 12px; }
+.chapter .prose, .theory-ref-body .prose { font-size: 15.5px; line-height: 1.7; }
+.chapter .prose h5, .theory-ref-body .prose h5 { font-size: 17px; margin-top: 26px; }
+.pager { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 24px; }
+.pager a { display: flex; flex-direction: column; gap: 2px; color: var(--text); }
+.pager a:hover { border-color: var(--accent); text-decoration: none; }
+.pager .next { text-align: right; }
+.search-chapters { margin-bottom: 12px; }
+.search-chapters ul { margin: 6px 0 0; padding-left: 20px; }
+@media (max-width: 600px) {
+  .chapter { padding: 16px; }
+  .pager { grid-template-columns: 1fr; }
+}
