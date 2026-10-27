@@ -237,3 +237,8 @@ mark { background: var(--warn-soft); color: inherit; padding: 0 2px; border-radi
 .ai-score span { font-size: 16px; color: var(--muted); font-weight: 400; }
 .rate .btn.suggested { outline: 3px solid currentColor; outline-offset: 2px; }
 @media (max-width: 640px) { .ai-verdict { flex-direction: column; gap: 8px; } .msg { max-width: 100%; } }
+
+/* Выбор тем: заголовок со счётчиком и кнопками «Выбрать все / Снять все» */
+.topic-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.topic-head .hint { margin-right: auto; }
+.btn.small { padding: 4px 10px; font-size: 13px; }

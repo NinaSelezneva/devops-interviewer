@@ -264,16 +264,30 @@
 
   // ---------- Выбор тем (общий для тренировки и собеседования) ----------
   function topicChecks(selected) {
-    return `<div class="topic-checks">${TOPICS.map((t) => `<label><input type="checkbox" name="topic" value="${t.id}" ${selected.has(t.id) ? 'checked' : ''}>
-      ${t.icon} ${esc(t.title)} <span class="hint">(${t.questions.length})</span></label>`).join('')}</div>
-      <div class="row"><button class="link-btn" data-all="1">Выбрать все</button><button class="link-btn" data-all="0">Снять все</button></div>`;
+    return `<div class="topic-head"><strong>Темы</strong> <span class="hint" data-topic-count></span>
+        <button type="button" class="btn small" data-all="1">✓ Выбрать все</button>
+        <button type="button" class="btn small" data-all="0">✕ Снять все</button></div>
+      <div class="topic-checks">${TOPICS.map((t) => `<label><input type="checkbox" name="topic" value="${t.id}" ${selected.has(t.id) ? 'checked' : ''}>
+      ${t.icon} ${esc(t.title)} <span class="hint">(${t.questions.length})</span></label>`).join('')}</div>`;
   }
   function bindTopicChecks(root) {
+    const inputs = [...root.querySelectorAll('input[name=topic]')];
+    const counter = root.querySelector('[data-topic-count]');
+    const update = () => {
+      const n = inputs.filter((i) => i.checked).length;
+      counter.textContent = `выбрано ${n} из ${inputs.length}`;
+      root.querySelector('[data-all="1"]').disabled = n === inputs.length;
+      root.querySelector('[data-all="0"]').disabled = n === 0;
+    };
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-all]');
-      if (b) root.querySelectorAll('input[name=topic]').forEach((i) => { i.checked = b.dataset.all === '1'; });
+      if (!b) return;
+      inputs.forEach((i) => { i.checked = b.dataset.all === '1'; });
+      update();
     });
-    return () => [...root.querySelectorAll('input[name=topic]:checked')].map((i) => i.value);
+    root.addEventListener('change', update);
+    update();
+    return () => inputs.filter((i) => i.checked).map((i) => i.value);
   }
   const parseTopics = (params) => new Set((params.get('topics') || '').split(',').filter((id) => TOPIC.has(id)));
 
@@ -315,7 +329,7 @@
       <p class="lead">Прочитайте вопрос, ответьте вслух или письменно, затем откройте эталон и оцените себя.
         «Не знаю» вернёт вопрос ещё раз в этой же сессии и сразу поставит его в очередь на повторение.</p>
       <div class="card setup" id="setup">
-        <div><strong>Темы</strong>${topicChecks(selected)}</div>
+        <div>${topicChecks(selected)}</div>
         <div class="row"><strong>Режим</strong>
           <select id="mode">
             <option value="smart" ${mode === 'smart' ? 'selected' : ''}>Умная очередь: повторение + новые</option>
@@ -434,7 +448,7 @@
       <p class="lead">Вопросы из разных тем в случайном порядке и с ограничением по времени — как на реальном интервью.
         Отвечайте вслух (лучше — с записью на диктофон) или письменно, после каждого вопроса сравните с эталоном.</p>
       <div class="card setup" id="setup">
-        <div><strong>Темы</strong>${topicChecks(selected)}</div>
+        <div>${topicChecks(selected)}</div>
         <div class="row">
           <strong>Вопросов</strong><select id="count"><option>5</option><option selected>10</option><option>15</option><option>20</option></select>
           <strong>Время на ответ</strong><select id="time"><option value="120">2 мин</option><option value="180" selected>3 мин</option><option value="300">5 мин</option><option value="0">Без таймера</option></select>
@@ -573,7 +587,7 @@
       <p class="lead">Отвечайте письменно, как на собеседовании. AI сравнит ответ с эталоном, задаст до двух уточняющих вопросов
         и поставит оценку с разбором: что прозвучало хорошо и чего не хватило. Эталон откроется после оценки.</p>
       <div class="card setup" id="setup">
-        <div><strong>Темы</strong>${topicChecks(selected)}</div>
+        <div>${topicChecks(selected)}</div>
         <div class="row">
           <strong>Вопросов</strong><select id="count"><option>3</option><option selected>5</option><option>10</option></select>
           <strong>Уровень</strong>${levelSelect(savedLevel())}
