@@ -552,6 +552,196 @@
     next();
   }
 
+  // ---------- Экран: AI-интервьюер ----------
+  // Диалог идёт через серверный прокси (server/serve.mjs): ключ LLM API хранится только на сервере.
+  // Адрес прокси задаётся в <meta name="ai-endpoint">, по умолчанию — тот же сервер, что отдаёт сайт.
+  const AI_API = (document.querySelector('meta[name="ai-endpoint"]')?.content || 'api').replace(/\/$/, '');
+  const aiText = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
+
+  async function aiCall(body) {
+    const res = await fetch(`${AI_API}/interview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Ошибка сервера (${res.status})`);
+    return data;
+  }
+
+  function viewAiSetup(params) {
+    const pre = parseTopics(params);
+    const selected = pre.size ? pre : new Set(TOPICS.map((t) => t.id));
+    app.innerHTML = `
+      <h1>AI-интервьюер</h1>
+      <p class="lead">Отвечайте письменно, как на собеседовании. AI сравнит ответ с эталоном, задаст до двух уточняющих вопросов
+        и поставит оценку с разбором: что прозвучало хорошо и чего не хватило. Эталон откроется после оценки.</p>
+      <div class="card setup" id="setup">
+        <div><strong>Темы</strong>${topicChecks(selected)}</div>
+        <div class="row">
+          <strong>Вопросов</strong><select id="count"><option>3</option><option selected>5</option><option>10</option></select>
+          <strong>Уровень</strong>${levelSelect(savedLevel())}
+        </div>
+        <div><button class="btn primary" id="start" disabled>🤖 Начать</button> <span class="hint" id="setup-hint">Проверяю подключение к AI…</span></div>
+      </div>`;
+    const setup = document.getElementById('setup');
+    const getTopics = bindTopicChecks(setup);
+    const startBtn = document.getElementById('start');
+    const hint = document.getElementById('setup-hint');
+    fetch(`${AI_API}/health`).then((r) => (r.ok ? r.json() : Promise.reject())).then((h) => {
+      if (!h.ok) throw new Error();
+      startBtn.disabled = false;
+      hint.textContent = '';
+    }).catch(() => {
+      if (!document.body.contains(hint)) return;
+      hint.innerHTML = 'AI-сервер недоступен. Локально запустите <code>npm run dev</code> с ключом в <code>.env</code> (см. README).';
+    });
+    startBtn.addEventListener('click', () => {
+      const lvl = document.getElementById('level').value;
+      saveLevel(lvl);
+      const qs = pickInterview(getTopics(), Number(document.getElementById('count').value), lvl);
+      if (!qs.length) { hint.textContent = 'Выберите хотя бы одну тему.'; return; }
+      runAi(qs);
+    });
+  }
+
+  function runAi(questions) {
+    const results = [];
+    let i = -1;
+    let messages = [];
+    let verdict = null;
+    let busy = false;
+
+    const bubble = (m) => `<div class="msg ${m.role}"><div class="msg-who">${m.role === 'candidate' ? 'Вы' : '🤖 Интервьюер'}</div>${aiText(m.text)}</div>`;
+
+    const next = () => {
+      i++;
+      messages = [];
+      verdict = null;
+      if (i >= questions.length) return finish();
+      const q = questions[i];
+      app.innerHTML = `
+        <div class="session-head"><span>Вопрос ${i + 1} из ${questions.length}</span><a class="hint" href="#/ai">Завершить</a></div>
+        <div class="session-progress"><span style="width:${(i / questions.length) * 100}%"></span></div>
+        <div class="card flash">
+          ${badges(q, true)}
+          <div class="q">${esc(q.q)}</div>
+          ${taskBlock(q)}
+          <div class="chat" id="chat"></div>
+          <div id="composer">
+            <textarea id="draft" placeholder="Ваш ответ: тезисы, команды, ход рассуждений. Ctrl+Enter — отправить"></textarea>
+            <div class="actions">
+              <button class="btn primary" id="send">Ответить <kbd>Ctrl+Enter</kbd></button>
+              <button class="btn" id="dunno">Не знаю</button>
+              <button class="btn" id="stop" hidden>Хватит уточнений, оцените</button>
+              <span class="hint" id="ai-status"></span>
+            </div>
+          </div>
+          <div id="answer"></div>
+        </div>`;
+      document.getElementById('send').addEventListener('click', () => send());
+      document.getElementById('dunno').addEventListener('click', () => send('Не знаю.', true));
+      document.getElementById('stop').addEventListener('click', () => send('(Кандидат решил не отвечать на уточнение.)', true));
+      document.getElementById('draft').focus();
+    };
+
+    const renderChat = () => { document.getElementById('chat').innerHTML = messages.map(bubble).join(''); };
+    const setStatus = (html) => { document.getElementById('ai-status').innerHTML = html; };
+
+    async function send(preset, finish = false, retry = false) {
+      if (busy || verdict) return;
+      const draft = document.getElementById('draft');
+      if (!retry) {
+        const text = preset || draft.value.trim();
+        if (!text) { draft.focus(); return; }
+        messages.push({ role: 'candidate', text });
+        draft.value = '';
+        renderChat();
+      }
+      busy = true;
+      document.querySelectorAll('#composer button').forEach((b) => { b.disabled = true; });
+      setStatus('<span class="thinking">Интервьюер думает…</span>');
+      try {
+        const r = await aiCall({ id: questions[i].id, messages, finish });
+        if (!document.getElementById('chat')) return;   // пользователь ушёл с экрана
+        messages.push({ role: 'interviewer', text: r.message || '' });
+        if (r.action === 'finish') showVerdict(r);
+        else {
+          renderChat();
+          setStatus('');
+          document.getElementById('stop').hidden = false;
+          draft.focus();
+        }
+      } catch (e) {
+        if (!document.getElementById('chat')) return;
+        setStatus(`<span class="error">${esc(e.message)}</span> <button class="link-btn" id="retry">Повторить</button>`);
+        document.getElementById('retry').addEventListener('click', () => send(null, finish, true));
+      } finally {
+        busy = false;
+        document.querySelectorAll('#composer button').forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    function showVerdict(r) {
+      verdict = r;
+      const q = questions[i];
+      messages.pop();   // итоговая фраза показывается в карточке оценки, а не пузырём
+      renderChat();
+      document.getElementById('composer').remove();
+      const cls = r.grade === 2 ? 'good' : r.grade === 1 ? 'warn' : 'bad';
+      const box = document.getElementById('answer');
+      box.innerHTML = `
+        <div class="ai-verdict ${cls}">
+          <div class="ai-score">${r.score ?? '—'}<span>/10</span></div>
+          <div>${r.message ? `<p>${aiText(r.message)}</p>` : ''}
+            ${r.strengths.length ? `<h4>👍 Хорошо</h4><ul>${r.strengths.map((s) => `<li>${aiText(s)}</li>`).join('')}</ul>` : ''}
+            ${r.gaps.length ? `<h4>🔍 Не хватило</h4><ul>${r.gaps.map((s) => `<li>${aiText(s)}</li>`).join('')}</ul>` : ''}
+            ${r.advice ? `<p class="hint">💡 ${aiText(r.advice)}</p>` : ''}</div>
+        </div>
+        <details class="card theory"><summary>📘 Эталонный ответ</summary><div class="prose">${q.a}</div></details>
+        ${theoryRefs(q)}
+        <p class="hint">Оцените себя для интервального повторения${r.grade !== null ? ' — AI предлагает выделенный вариант' : ''}:</p>
+        ${rateButtons(q.id).replace('data-rate', 'data-session="1" data-rate')}`;
+      if (r.grade !== null) box.querySelector(`[data-grade="${r.grade}"]`).classList.add('suggested');
+      box.querySelector('.rate').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-grade]');
+        if (b) grade(Number(b.dataset.grade));
+      });
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    const grade = (g) => {
+      const q = questions[i];
+      rate(q.id, g);
+      results.push({ id: q.id, grade: g, score: verdict.score, gaps: verdict.gaps });
+      renderFooter();
+      next();
+    };
+
+    const finish = () => {
+      cleanup();
+      if (!results.length) { location.hash = '#/ai'; return; }
+      const scored = results.filter((r) => r.score !== null);
+      const avg = scored.length ? scored.reduce((s, r) => s + r.score, 0) / scored.length : 0;
+      const score = Math.round(avg * 10);
+      store.history.push({ date: Date.now(), n: results.length, score, topics: [...new Set(results.map((r) => BY_ID.get(r.id).topic))] });
+      store.history = store.history.slice(-50);
+      save();
+      app.innerHTML = `
+        <h1>Итог AI-собеседования</h1>
+        <div class="card"><div class="score-big">${avg.toFixed(1)}<span class="hint"> / 10</span></div>
+          <p>${avg >= 8 ? 'Сильные ответы — так держать.' : avg >= 5 ? 'База есть, но интервьюер нашёл пробелы — разберите их ниже.' : 'Стоит вернуться к теории по этим вопросам.'}</p></div>
+        <h2>Вопросы</h2>
+        <div class="qlist" id="qlist">${results.map((r) => questionItem(BY_ID.get(r.id), true)
+          .replace('<span class="chev">▸</span>', `<span class="chev">▸</span><span class="badge ${['st-new', 'st-learning', 'st-known'][r.grade]}">${r.score ?? '—'}/10</span>`)
+          .replace('<div class="qbody">', `<div class="qbody">${r.gaps.length ? `<div class="callout"><strong>Чего не хватило:</strong><ul>${r.gaps.map((s) => `<li>${aiText(s)}</li>`).join('')}</ul></div>` : ''}`)).join('')}</div>
+        <div class="actions"><a class="btn primary" href="#/ai">Ещё раз</a><a class="btn" href="#/train?mode=due&autostart=1">Повторить слабые</a></div>`;
+      bindListRating(document.getElementById('qlist'));
+    };
+
+    onKeys((e, inText) => {
+      if (inText && !verdict) { e.preventDefault(); send(); return; }
+      if (verdict && !inText && ['1', '2', '3'].includes(e.key)) grade(Number(e.key) - 1);
+    });
+    next();
+  }
+
   // ---------- Экраны: подробная теория ----------
   const chapterQs = (id) => CHAPTER_QS.get(id) || [];
   const trainLink = (qs) => `#/train?ids=${qs.map((q) => q.id).join(',')}`;
@@ -746,6 +936,7 @@
     }
     else if (section === 'train') viewTrainSetup(params);
     else if (section === 'interview') viewInterviewSetup(params);
+    else if (section === 'ai') viewAiSetup(params);
     else if (section === 'search') viewSearch(params);
     else viewHome();
     renderFooter();

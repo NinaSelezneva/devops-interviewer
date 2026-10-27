@@ -24,6 +24,15 @@ jobs:
           node-version: 22
       - name: Build content
         run: npm run build
+      # Адрес AI-прокси (Cloudflare Worker) берётся из секрета AI_ENDPOINT.
+      # Секреты недоступны в if:, поэтому пустое значение проверяется в shell.
+      - name: Configure AI endpoint
+        env:
+          AI_ENDPOINT: ${{ secrets.AI_ENDPOINT }}
+        run: |
+          if [ -z "$AI_ENDPOINT" ]; then echo "AI_ENDPOINT не задан — AI-интервьюер на сайте будет недоступен"; exit 0; fi
+          sed -i "s|<meta name=\"ai-endpoint\" content=\"\">|<meta name=\"ai-endpoint\" content=\"${AI_ENDPOINT}\">|" web/index.html
+          grep -q 'name="ai-endpoint" content="https' web/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

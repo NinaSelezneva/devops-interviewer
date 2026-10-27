@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "start": "node scripts/build.mjs && npx --yes serve web -l 8080"
+    "start": "node scripts/build.mjs && npx --yes serve web -l 8080",
+    "dev": "node scripts/build.mjs && node server/serve.mjs"
   },
   "engines": {
     "node": ">=18"
