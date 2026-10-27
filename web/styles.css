@@ -215,3 +215,25 @@ mark { background: var(--warn-soft); color: inherit; padding: 0 2px; border-radi
   .chapter { padding: 16px; }
   .pager { grid-template-columns: 1fr; }
 }
+
+/* AI-интервьюер */
+.chat { display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; }
+.chat:empty { display: none; }
+.msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; background: var(--surface-2); overflow-wrap: anywhere; }
+.msg.candidate { align-self: flex-end; background: var(--accent-soft); }
+.msg-who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.msg code, .ai-verdict code { font-family: var(--mono); font-size: .9em; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.thinking { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .4; } }
+.error { color: var(--bad); }
+.ai-verdict { display: flex; gap: 16px; align-items: flex-start; padding: 16px; border-radius: var(--radius); border: 1px solid; margin-bottom: 12px; }
+.ai-verdict.good { background: var(--good-soft); border-color: var(--good); }
+.ai-verdict.warn { background: var(--warn-soft); border-color: var(--warn); }
+.ai-verdict.bad { background: var(--bad-soft); border-color: var(--bad); }
+.ai-verdict p { margin: 0 0 8px; }
+.ai-verdict h4 { margin: 8px 0 4px; font-size: 14px; }
+.ai-verdict ul { margin: 0; padding-left: 20px; }
+.ai-score { font-size: 36px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.ai-score span { font-size: 16px; color: var(--muted); font-weight: 400; }
+.rate .btn.suggested { outline: 3px solid currentColor; outline-offset: 2px; }
+@media (max-width: 640px) { .ai-verdict { flex-direction: column; gap: 8px; } .msg { max-width: 100%; } }
