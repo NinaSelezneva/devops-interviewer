@@ -27,7 +27,14 @@ npm run dev            # http://localhost:8080/#/ai
 
 Переменные: `LAMA_API` (ключ), `LAMA_URL` (базовый URL OpenAI-совместимого API), `LAMA_MODEL` (модель) — обязательные, значений по умолчанию нет, в GitHub хранятся в секретах репозитория; `PORT`, `ALLOW_ORIGIN` (origin фронтенда, если прокси размещён отдельно от сайта; адрес прокси указывается в `<meta name="ai-endpoint">` в `web/index.html`).
 
-На GitHub Pages AI-интервьюер недоступен, пока прокси не развёрнут отдельно: статический сайт не может хранить ключ, не раскрыв его посетителям.
+### AI-интервьюер онлайн (Cloudflare Workers)
+
+GitHub Pages отдаёт только статику и не может хранить ключ, поэтому прокси для онлайн-версии работает в Cloudflare Worker (`worker/index.mjs`, `wrangler.toml`). Он использует ту же логику `server/interviewer.mjs`, принимает запросы из браузера только с `ALLOW_ORIGIN` и ограничивает вызовы LLM: 20 в минуту с одного IP и 2000 в сутки на всех (счётчики — Durable Object `Limiter`).
+
+Деплой — `.github/workflows/worker.yml` при пуше в `main`. В настройках репозитория нужны:
+
+- **Secrets:** `LAMA_API`, `LAMA_URL`, `LAMA_MODEL`, `CLOUDFLARE_API_TOKEN` (шаблон токена «Edit Cloudflare Workers»), `CLOUDFLARE_ACCOUNT_ID`;
+- `AI_ENDPOINT` (тоже в Secrets) — адрес Worker (`https://devops-interviewer-ai.<поддомен>.workers.dev`), его `pages.yml` подставляет в `<meta name="ai-endpoint">` при сборке сайта. Адрес всё равно виден в коде страницы: секрет лишь не хранит его в репозитории.
 
 ## Возможности
 
@@ -55,6 +62,7 @@ theory/           # подробная теория по главам, на не
   01-linux.md ... 18-messaging.md
 scripts/build.mjs # сборщик: content/*.md → web/data.js (+ валидация)
 server/           # AI-прокси: serve.mjs (HTTP + статика), interviewer.mjs (промпт и вызов LLM)
+worker/           # тот же прокси для Cloudflare Workers (онлайн-версия)
 web/              # статическое приложение без зависимостей
   index.html  app.js  styles.css  data.js (генерируется)
 docs/research.md  # анализ вопросов и источники

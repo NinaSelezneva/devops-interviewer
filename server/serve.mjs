@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
 import { join, dirname, extname, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { interview, loadQuestions, HttpError } from './interviewer.mjs';
+import { interview, QUESTIONS, HttpError } from './interviewer.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const webDir = join(root, 'web');
@@ -29,7 +29,6 @@ const config = {
   apiKey: process.env.LAMA_API,
   apiUrl: process.env.LAMA_URL,
   model: process.env.LAMA_MODEL,
-  questions: loadQuestions(join(webDir, 'data.js')),
 };
 const port = Number(process.env.PORT) || 8080;
 const allowOrigin = process.env.ALLOW_ORIGIN || '';
@@ -103,5 +102,5 @@ createServer((req, res) => {
   if (path.startsWith('/api/')) handleApi(req, res, path);
   else serveStatic(res, path);
 }).listen(port, () => {
-  console.log(`DevOps Interviewer: http://localhost:${port}  (AI: ${configured ? 'настроен' : 'не настроен'}, вопросов: ${config.questions.size})`);
+  console.log(`DevOps Interviewer: http://localhost:${port}  (AI: ${configured ? 'настроен' : 'не настроен'}, вопросов: ${QUESTIONS.size})`);
 });

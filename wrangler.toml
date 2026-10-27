@@ -1,0 +1,19 @@
+# Cloudflare Worker с AI-прокси. Деплой: .github/workflows/worker.yml
+# Секреты (LAMA_API, LAMA_URL, LAMA_MODEL) здесь не хранятся: их передаёт workflow из GitHub Secrets.
+name = "devops-interviewer-ai"
+main = "worker/index.mjs"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[vars]
+# Сайты, которым разрешено обращаться к прокси из браузера (через запятую)
+ALLOW_ORIGIN = "https://ninaselezneva.github.io"
+
+# Счётчики лимитов запросов (класс Limiter в worker/index.mjs): 20 в минуту с IP и 2000 в сутки на всех
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "Limiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Limiter"]

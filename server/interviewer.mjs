@@ -1,8 +1,10 @@
-// Логика AI-интервьюера, не зависящая от HTTP-обвязки: промпт, вызов LLM, разбор ответа.
-// Клиент присылает только id вопроса и реплики диалога. Эталонный ответ сервер берёт
-// из web/data.js сам: так эталон не уходит в браузер раньше времени, а прокси нельзя
-// использовать как универсальный доступ к LLM.
-import { readFileSync } from 'node:fs';
+// Логика AI-интервьюера, не зависящая от платформы (Node-сервер и Cloudflare Worker):
+// промпт, вызов LLM, разбор ответа. Клиент присылает только id вопроса и реплики диалога,
+// а эталон берётся из server/questions.js (генерирует scripts/build.mjs): так прокси
+// нельзя использовать как универсальный доступ к LLM.
+import QUESTION_LIST from './questions.js';
+
+export const QUESTIONS = new Map(QUESTION_LIST.map((q) => [q.id, q]));
 
 export const LIMITS = {
   followups: 2,        // сколько уточняющих вопросов максимум задаёт интервьюер
@@ -11,15 +13,6 @@ export const LIMITS = {
 };
 
 const LEVEL_NAMES = { middle: 'Middle', senior: 'Senior', lead: 'Lead' };
-
-export function loadQuestions(dataFile) {
-  const src = readFileSync(dataFile, 'utf8');
-  const json = src.slice(src.indexOf('{'), src.lastIndexOf('}') + 1);
-  const data = JSON.parse(json);
-  const byId = new Map();
-  for (const t of data.topics) for (const q of t.questions) byId.set(q.id, { ...q, topicTitle: t.title });
-  return byId;
-}
 
 // HTML эталона → читаемый текст для промпта (блоки кода и списки сохраняют переносы)
 function htmlToText(html) {
@@ -88,8 +81,8 @@ export class HttpError extends Error {
 }
 
 // body: { id, messages: [{ role: 'candidate' | 'interviewer', text }], finish?: boolean }
-export async function interview(body, { questions, apiUrl, apiKey, model }) {
-  const q = questions.get(body?.id);
+export async function interview(body, { apiUrl, apiKey, model }) {
+  const q = QUESTIONS.get(body?.id);
   if (!q) throw new HttpError(400, 'Неизвестный вопрос');
   const msgs = Array.isArray(body.messages) ? body.messages : [];
   if (!msgs.length || msgs.length > LIMITS.messages) throw new HttpError(400, 'Некорректная история диалога');

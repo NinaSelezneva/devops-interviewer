@@ -1,0 +1,45 @@
+name: Deploy AI proxy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'worker/**'
+      - 'content/**'
+      - 'scripts/build.mjs'
+      - 'wrangler.toml'
+      - '.github/workflows/worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build content (generates server/questions.js)
+        run: npm run build
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4.148.0'
+          # Имена переменных окружения шага, которые станут секретами Worker
+          secrets: |
+            LAMA_API
+            LAMA_URL
+            LAMA_MODEL
+        env:
+          LAMA_API: ${{ secrets.LAMA_API }}
+          LAMA_URL: ${{ secrets.LAMA_URL }}
+          LAMA_MODEL: ${{ secrets.LAMA_MODEL }}

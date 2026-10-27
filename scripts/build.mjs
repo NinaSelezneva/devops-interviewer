@@ -241,6 +241,9 @@ for (const t of topics) for (const q of t.questions) {
 }
 
 writeFileSync(outFile, `// Сгенерировано scripts/build.mjs — не редактируйте вручную.\nwindow.DATA = ${JSON.stringify({ builtAt: new Date().toISOString(), topics, theory })};\n`);
+// Вопросы с эталонами для AI-интервьюера: ES-модуль, который импортируют и Node-сервер, и Cloudflare Worker
+const aiQuestions = topics.flatMap((t) => t.questions.map((q) => ({ id: q.id, topicTitle: t.title, level: q.level, q: q.q, p: q.p, a: q.a })));
+writeFileSync(join(root, 'server', 'questions.js'), `// Сгенерировано scripts/build.mjs — не редактируйте вручную.\nexport default ${JSON.stringify(aiQuestions)};\n`);
 const total = topics.reduce((n, t) => n + t.questions.length, 0);
 console.log(`OK: ${topics.length} тем, ${total} вопросов → web/data.js`);
 for (const t of topics) {
