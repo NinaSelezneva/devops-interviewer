@@ -46,6 +46,7 @@ ${htmlToText(q.a)}
 ФОРМАТ ОТВЕТА — строго один JSON-объект без markdown-обёртки:
 - уточнение: {"action":"followup","message":"<уточняющий вопрос>"}
 - завершение: {"action":"finish","message":"<1–2 фразы итога для кандидата>","score":<целое 0..10, оценка всего диалога>,"strengths":["<что было хорошо>"],"gaps":["<чего не хватило или что неверно>"],"advice":"<что повторить, одной фразой>"}
+Пиши кратко: в strengths и gaps не больше 4 пунктов, каждый — одна короткая фраза; message и advice — по одной-две фразы.
 Шкала: 9–10 — уровень сильного ${LEVEL_NAMES[q.level] || ''}, 6–8 — в целом верно с пробелами, 3–5 — поверхностно или с ошибками, 0–2 — не ответил или неверно.`;
 }
 
@@ -56,7 +57,28 @@ function parseReply(text) {
   if (start >= 0 && end > start) {
     try { return JSON.parse(text.slice(start, end + 1)); } catch { /* ниже — запасной вариант */ }
   }
+  if (start >= 0) return salvage(text.slice(start));
   return { action: 'followup', message: text.trim() };
+}
+
+// Ответ, оборванный на середине JSON (модель упёрлась в max_tokens): достаём поля по отдельности.
+// Незакрытая строка в конце не совпадёт с шаблоном и просто отбросится.
+const JSON_STR = '"((?:[^"\\\\]|\\\\.)*)"';
+const unquote = (s) => { try { return JSON.parse(`"${s}"`); } catch { return s; } };
+function salvage(text) {
+  const str = (key) => {
+    const m = text.match(new RegExp(`"${key}"\\s*:\\s*${JSON_STR}`));
+    return m ? unquote(m[1]) : undefined;
+  };
+  const list = (key) => {
+    const m = text.match(new RegExp(`"${key}"\\s*:\\s*\\[([^\\]]*)`));
+    return m ? [...m[1].matchAll(new RegExp(JSON_STR, 'g'))].map((x) => unquote(x[1])) : [];
+  };
+  const score = text.match(/"score"\s*:\s*(\d+)/);
+  return {
+    action: str('action'), message: str('message'), score: score ? Number(score[1]) : undefined,
+    strengths: list('strengths'), gaps: list('gaps'), advice: str('advice'),
+  };
 }
 
 const strList = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim()).slice(0, 6) : []);
@@ -102,7 +124,7 @@ export async function interview(body, { apiUrl, apiKey, model }) {
     body: JSON.stringify({
       model,
       temperature: 0.3,
-      max_tokens: 900,
+      max_tokens: 2000,
       messages: [{ role: 'system', content: systemPrompt(q, mustFinish) }, ...chat],
     }),
     signal: AbortSignal.timeout(90_000),
@@ -112,6 +134,10 @@ export async function interview(body, { apiUrl, apiKey, model }) {
     throw new HttpError(502, 'LLM API вернул ошибку, попробуйте ещё раз');
   }
   const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || '';
-  return normalize(parseReply(text), mustFinish);
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === 'length') console.warn(`LLM: ответ обрезан по max_tokens (вопрос ${q.id})`);
+  const result = normalize(parseReply(choice?.message?.content || ''), mustFinish);
+  // Без оценки карточка итога бессмысленна: пусть клиент покажет ошибку с кнопкой «Повторить»
+  if (result.action === 'finish' && result.score === null) throw new HttpError(502, 'Модель вернула неполный ответ, попробуйте ещё раз');
+  return result;
 }
