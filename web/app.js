@@ -573,9 +573,26 @@
   const aiText = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
 
   async function aiCall(body) {
-    const res = await fetch(`${AI_API}/interview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Ошибка сервера (${res.status})`);
+    let res;
+    try {
+      res = await fetch(`${AI_API}/interview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (e) {
+      throw new Error(e.name === 'TimeoutError' ? 'Интервьюер не ответил за 2 минуты' : 'Нет связи с AI-сервером');
+    }
+    // Ответ может оборваться или подмениться по дороге (прокси, фильтры провайдера) даже при статусе 200,
+    // поэтому пустой или нечитаемый ответ — это ошибка с кнопкой «Повторить», а не пустая реплика
+    const raw = await res.text().catch(() => '');
+    let data = null;
+    try { data = JSON.parse(raw); } catch { /* ниже */ }
+    if (!res.ok) throw new Error(data?.error || `Ошибка сервера (${res.status})`);
+    const valid = data && (data.action === 'finish' ? typeof data.score === 'number' : typeof data.message === 'string' && data.message.trim());
+    if (!valid) {
+      console.warn('AI: неожиданный ответ сервера', res.status, raw.slice(0, 500));
+      throw new Error('Пришёл неполный ответ, попробуйте ещё раз');
+    }
     return data;
   }
 
